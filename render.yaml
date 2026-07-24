@@ -1,0 +1,51 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# After create, set secrets in the dashboard (sync: false below):
+#   WEBHOOK_SECRET, REAKTOR_BASE_URL, REAKTOR_API_KEY, FACTOR_ADMIN_TOKEN
+#
+# Keep TRADING_ENABLED=false until paper path looks good in logs.
+#
+# Point Reaktor REAKTOR_WEBHOOKS at:
+#   https://<this-service>.onrender.com/hooks/reaktor
+#
+# See docs/DEPLOY.md for the full checklist.
+
+services:
+  - type: web
+    name: factor
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m factor
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: BROKER
+        value: paper
+      - key: TRADING_ENABLED
+        value: "false"
+      - key: TRADE_KINDS
+        value: candle
+      - key: TRADE_SYMBOLS
+        value: XAU/USD
+      - key: POLL_INTERVAL_SEC
+        value: "60"
+      - key: CATCHUP_ON_START
+        value: "true"
+      - key: MAX_OPEN_PER_SYMBOL
+        value: "1"
+      - key: MAX_TRADES_PER_DAY
+        value: "10"
+      - key: COOLDOWN_SEC
+        value: "300"
+      # Secrets — set in Render dashboard
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: REAKTOR_BASE_URL
+        sync: false
+      - key: REAKTOR_API_KEY
+        sync: false
+      - key: FACTOR_ADMIN_TOKEN
+        sync: false

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+ENV/
+env/
+
+# Secrets & local state
+.env
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# macOS / IDE / test cache
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.pytest_cache/

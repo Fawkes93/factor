@@ -1,0 +1,194 @@
+"""
+FastAPI app: webhook, health, trades, kill switch.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
+
+from factor import __version__, config
+from factor.broker.factory import get_broker
+from factor.catchup import last_poll_status, run_catchup, start_poll_loop, stop_poll_loop
+from factor.engine import process_alert
+from factor.inbound.auth import verify_signature
+from factor.inbound.models import parse_cloudevent
+from factor.store.state import StateStore
+
+
+def _require_admin(authorization: Optional[str], x_api_key: Optional[str]) -> None:
+    """If FACTOR_ADMIN_TOKEN is set, require Bearer or X-Api-Key."""
+    token = config.FACTOR_ADMIN_TOKEN
+    if not token:
+        return
+    got = None
+    if authorization and authorization.lower().startswith("bearer "):
+        got = authorization[7:].strip()
+    elif x_api_key:
+        got = x_api_key.strip()
+    if not got or not secrets.compare_digest(got, token):
+        raise HTTPException(status_code=401, detail="admin auth required")
+
+
+def create_app(
+    *,
+    store: Optional[StateStore] = None,
+    skip_catchup: bool = False,
+) -> FastAPI:
+    state_store = store or StateStore(config.DB_PATH)
+    broker = get_broker()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.store = state_store
+        app.state.broker = broker
+        print(
+            f"🚀 Factor v{__version__} broker={config.BROKER} "
+            f"trading_enabled={config.TRADING_ENABLED} "
+            f"kinds={config.TRADE_KINDS} symbols={config.TRADE_SYMBOLS}"
+        )
+        if not config.WEBHOOK_SECRET:
+            print("⚠️  WEBHOOK_SECRET empty — webhooks will 503 until set")
+        if not config.FACTOR_ADMIN_TOKEN:
+            print(
+                "⚠️  FACTOR_ADMIN_TOKEN unset — /api/trades and /api/kill are open"
+            )
+        if not skip_catchup:
+            try:
+                run_catchup(state_store, broker)
+            except Exception as e:
+                print(f"⚠️  Catch-up error (continuing): {e}")
+            try:
+                start_poll_loop(state_store, broker)
+            except Exception as e:
+                print(f"⚠️  Poll loop start failed: {e}")
+        yield
+        stop_poll_loop()
+
+    app = FastAPI(title="Factor", version=__version__, lifespan=lifespan)
+    # Available immediately (tests + early requests before lifespan)
+    app.state.store = state_store
+    app.state.broker = broker
+
+    @app.get("/")
+    def root() -> Dict[str, Any]:
+        return {
+            "service": "factor",
+            "version": __version__,
+            "health": "/api/health",
+            "webhook": "POST /hooks/reaktor",
+        }
+
+    @app.get("/api/health")
+    def health() -> Dict[str, Any]:
+        st = app.state.store
+        return {
+            "ok": True,
+            "service": "factor",
+            "version": __version__,
+            "broker": config.BROKER,
+            "trading_enabled": config.TRADING_ENABLED,
+            "trade_kinds": config.TRADE_KINDS,
+            "trade_symbols": config.TRADE_SYMBOLS,
+            "webhook_configured": bool(config.WEBHOOK_SECRET),
+            "reaktor_pull_configured": bool(
+                config.REAKTOR_BASE_URL and config.REAKTOR_API_KEY
+            ),
+            "poll_interval_sec": config.POLL_INTERVAL_SEC,
+            "admin_token_configured": bool(config.FACTOR_ADMIN_TOKEN),
+            "poll": last_poll_status(),
+            "stats": st.stats(),
+        }
+
+    @app.get("/api/trades")
+    def list_trades(
+        limit: int = 50,
+        authorization: Optional[str] = Header(default=None),
+        x_api_key: Optional[str] = Header(default=None),
+    ) -> Dict[str, Any]:
+        _require_admin(authorization, x_api_key)
+        trades = app.state.store.list_trades(limit=limit)
+        return {"count": len(trades), "trades": trades}
+
+    @app.post("/api/kill")
+    async def kill(
+        authorization: Optional[str] = Header(default=None),
+        x_api_key: Optional[str] = Header(default=None),
+        x_kill_token: Optional[str] = Header(default=None),
+    ) -> Dict[str, Any]:
+        """
+        Disable trading in-process until process restart / env change.
+        """
+        # Accept admin token or legacy X-Kill-Token
+        if config.FACTOR_ADMIN_TOKEN:
+            try:
+                _require_admin(authorization, x_api_key)
+            except HTTPException:
+                if not x_kill_token or not secrets.compare_digest(
+                    x_kill_token, config.FACTOR_ADMIN_TOKEN
+                ):
+                    raise HTTPException(status_code=401, detail="admin auth required")
+        config.TRADING_ENABLED = False
+        print("🛑 KILL switch: TRADING_ENABLED=false")
+        return {"ok": True, "trading_enabled": False}
+
+    @app.post("/api/catchup")
+    def manual_catchup(
+        authorization: Optional[str] = Header(default=None),
+        x_api_key: Optional[str] = Header(default=None),
+    ) -> Dict[str, Any]:
+        """Force a pull from Reaktor (admin)."""
+        _require_admin(authorization, x_api_key)
+        return run_catchup(app.state.store, app.state.broker, force=True)
+
+    @app.post("/hooks/reaktor")
+    async def reaktor_hook(
+        request: Request,
+        x_reaktor_signature: Optional[str] = Header(default=None),
+        x_reaktor_event_id: Optional[str] = Header(default=None),
+    ):
+        raw = await request.body()
+
+        if not config.WEBHOOK_SECRET:
+            print("⚠️  WEBHOOK_SECRET not set — rejecting webhooks")
+            raise HTTPException(
+                status_code=503,
+                detail="WEBHOOK_SECRET not configured",
+            )
+
+        if not verify_signature(config.WEBHOOK_SECRET, raw, x_reaktor_signature):
+            print(
+                f"⚠️  bad signature event_id={x_reaktor_event_id} "
+                f"body_len={len(raw)}"
+            )
+            raise HTTPException(status_code=401, detail="invalid signature")
+
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"invalid JSON: {e}")
+
+        try:
+            alert = parse_cloudevent(payload)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        result = process_alert(
+            alert,
+            store=app.state.store,
+            broker=app.state.broker,
+        )
+        # Always 200 once signature + parse ok so Reaktor does not hammer retries
+        # for policy skips.
+        return JSONResponse(status_code=200, content=result)
+
+    @app.get("/robots.txt", response_class=PlainTextResponse)
+    def robots() -> str:
+        return "User-agent: *\nDisallow: /\n"
+
+    return app
