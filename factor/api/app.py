@@ -49,7 +49,9 @@ def create_app(
         app.state.broker = broker
         print(
             f"🚀 Factor v{__version__} broker={config.BROKER} "
+            f"host={config.CTRADER_HOST} "
             f"trading_enabled={config.TRADING_ENABLED} "
+            f"dry_run={config.CTRADER_DRY_RUN} "
             f"kinds={config.TRADE_KINDS} symbols={config.TRADE_SYMBOLS}"
         )
         if not config.WEBHOOK_SECRET:
@@ -57,6 +59,16 @@ def create_app(
         if not config.FACTOR_ADMIN_TOKEN:
             print(
                 "⚠️  FACTOR_ADMIN_TOKEN unset — /api/trades and /api/kill are open"
+            )
+        if not (
+            config.CTRADER_CLIENT_ID
+            and config.CTRADER_CLIENT_SECRET
+            and config.CTRADER_ACCESS_TOKEN
+            and config.CTRADER_ACCOUNT_ID
+        ):
+            print(
+                "⚠️  cTrader credentials incomplete — orders will fail until set "
+                "(see docs/CTRADER.md)"
             )
         if not skip_catchup:
             try:
@@ -92,6 +104,14 @@ def create_app(
             "service": "factor",
             "version": __version__,
             "broker": config.BROKER,
+            "ctrader_host": config.CTRADER_HOST,
+            "ctrader_configured": bool(
+                config.CTRADER_CLIENT_ID
+                and config.CTRADER_CLIENT_SECRET
+                and config.CTRADER_ACCESS_TOKEN
+                and config.CTRADER_ACCOUNT_ID
+            ),
+            "ctrader_dry_run": config.CTRADER_DRY_RUN,
             "trading_enabled": config.TRADING_ENABLED,
             "trade_kinds": config.TRADE_KINDS,
             "trade_symbols": config.TRADE_SYMBOLS,

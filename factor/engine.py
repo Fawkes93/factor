@@ -82,11 +82,9 @@ def process_alert(
 
     result = broker.place_market_with_sl_tp(plan)
 
-    # Mark processed before/after trade — always, to avoid double-fire on crash
-    # after fill. Prefer after successful broker call; still mark on failure.
+    # Mark after broker attempt so we never double-fire the same alert_id.
     status = result.status if result.ok else "rejected"
-    if result.ok and status == "paper":
-        # Paper trades count as open for limit purposes until we add closes
+    if result.ok and status not in ("open", "filled", "rejected", "error"):
         status = "open"
 
     trade_id = store.insert_trade(

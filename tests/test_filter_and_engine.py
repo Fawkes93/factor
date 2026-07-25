@@ -3,10 +3,26 @@ from pathlib import Path
 import pytest
 
 from factor import config
-from factor.broker.paper import PaperBroker
+from factor.broker.base import OrderResult
 from factor.engine import process_alert
 from factor.inbound.models import AlertData
+from factor.rules.presets import OrderPlan
 from factor.store.state import StateStore
+
+
+class FakeBroker:
+    """Test double — does not call cTrader."""
+
+    name = "fake"
+
+    def place_market_with_sl_tp(self, plan: OrderPlan) -> OrderResult:
+        return OrderResult(
+            ok=True,
+            status="open",
+            broker_order_id=f"fake-{plan.alert_id}",
+            message="fake fill",
+            detail=plan.as_dict(),
+        )
 
 
 @pytest.fixture()
@@ -39,7 +55,7 @@ def _alert(**kwargs):
 
 def test_trading_disabled(store, monkeypatch):
     monkeypatch.setattr(config, "TRADING_ENABLED", False)
-    r = process_alert(_alert(), store=store, broker=PaperBroker())
+    r = process_alert(_alert(), store=store, broker=FakeBroker())
     assert r["action"] == "skip"
     assert r["reason"] == "trading_disabled"
 
@@ -48,7 +64,7 @@ def test_neutral_skipped(store):
     r = process_alert(
         _alert(side="NEUTRAL", kind="econ_calendar"),
         store=store,
-        broker=PaperBroker(),
+        broker=FakeBroker(),
     )
     assert r["action"] == "skip"
     assert r["reason"] == "side_neutral"
@@ -58,14 +74,14 @@ def test_kind_filter(store):
     r = process_alert(
         _alert(kind="cooloff"),
         store=store,
-        broker=PaperBroker(),
+        broker=FakeBroker(),
     )
     assert r["action"] == "skip"
     assert "kind_not_allowed" in r["reason"]
 
 
-def test_paper_trade_and_dedupe(store):
-    broker = PaperBroker()
+def test_trade_and_dedupe(store):
+    broker = FakeBroker()
     r1 = process_alert(_alert(alert_id=200), store=store, broker=broker)
     assert r1["action"] == "traded"
     assert r1["plan"]["side"] == "BUY"

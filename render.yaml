@@ -1,14 +1,11 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# After create, set secrets in the dashboard (sync: false below):
+# Secrets (set in dashboard):
 #   WEBHOOK_SECRET, REAKTOR_BASE_URL, REAKTOR_API_KEY, FACTOR_ADMIN_TOKEN
+#   CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID
 #
-# Keep TRADING_ENABLED=false until paper path looks good in logs.
-#
-# Point Reaktor REAKTOR_WEBHOOKS at:
-#   https://<this-service>.onrender.com/hooks/reaktor
-#
-# See docs/DEPLOY.md for the full checklist.
+# Keep TRADING_ENABLED=false until cTrader credentials + a dry-run test work.
+# See docs/DEPLOY.md and docs/CTRADER.md
 
 services:
   - type: web
@@ -23,7 +20,11 @@ services:
       - key: PYTHON_VERSION
         value: "3.12.8"
       - key: BROKER
-        value: paper
+        value: ctrader
+      - key: CTRADER_HOST
+        value: demo
+      - key: CTRADER_DRY_RUN
+        value: "true"
       - key: TRADING_ENABLED
         value: "false"
       - key: TRADE_KINDS
@@ -40,7 +41,6 @@ services:
         value: "10"
       - key: COOLDOWN_SEC
         value: "300"
-      # Secrets — set in Render dashboard
       - key: WEBHOOK_SECRET
         sync: false
       - key: REAKTOR_BASE_URL
@@ -48,4 +48,12 @@ services:
       - key: REAKTOR_API_KEY
         sync: false
       - key: FACTOR_ADMIN_TOKEN
+        sync: false
+      - key: CTRADER_CLIENT_ID
+        sync: false
+      - key: CTRADER_CLIENT_SECRET
+        sync: false
+      - key: CTRADER_ACCESS_TOKEN
+        sync: false
+      - key: CTRADER_ACCOUNT_ID
         sync: false

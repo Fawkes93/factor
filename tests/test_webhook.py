@@ -17,7 +17,12 @@ def test_webhook_happy_path(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "COOLDOWN_SEC", 0)
     monkeypatch.setattr(config, "CATCHUP_ON_START", False)
     monkeypatch.setattr(config, "POLL_INTERVAL_SEC", 0)
-    monkeypatch.setattr(config, "BROKER", "paper")
+    monkeypatch.setattr(config, "BROKER", "ctrader")
+    monkeypatch.setattr(config, "CTRADER_DRY_RUN", True)
+    monkeypatch.setattr(config, "CTRADER_CLIENT_ID", "test-id")
+    monkeypatch.setattr(config, "CTRADER_CLIENT_SECRET", "test-secret")
+    monkeypatch.setattr(config, "CTRADER_ACCESS_TOKEN", "test-token")
+    monkeypatch.setattr(config, "CTRADER_ACCOUNT_ID", "12345")
     monkeypatch.setattr(config, "FACTOR_ADMIN_TOKEN", "")
 
     store = StateStore(tmp_path / "hook.db")

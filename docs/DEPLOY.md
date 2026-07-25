@@ -55,7 +55,10 @@ openssl rand -hex 24
 
 | Key | Value |
 |-----|--------|
-| `BROKER` | `paper` |
+| `BROKER` | `ctrader` |
+| `CTRADER_HOST` | `demo` |
+| `CTRADER_DRY_RUN` | `true` until credentials verified |
+| `CTRADER_CLIENT_ID` / `_SECRET` / `_ACCESS_TOKEN` / `_ACCOUNT_ID` | from openapi.ctrader.com |
 | `TRADING_ENABLED` | `false` at first |
 | `WEBHOOK_SECRET` | your `whsec_…` |
 | `REAKTOR_BASE_URL` | `https://YOUR-REAKTOR.onrender.com` (no trailing slash) |
@@ -98,9 +101,10 @@ Notes:
 curl -sS https://factor-XXXX.onrender.com/api/health | python3 -m json.tool
 ```
 
-### Signed test webhook (paper path)
+### Signed test webhook
 
-With `TRADING_ENABLED=true` and `BROKER=paper` on Factor:
+With `TRADING_ENABLED=true`. Prefer `CTRADER_DRY_RUN=true` first (no broker order),
+then `false` when gold market is open and demo credentials are set:
 
 ```bash
 # set these first
@@ -156,14 +160,15 @@ Wait for a real Reaktor candle alert on XAU, then check Factor logs for `PAPER B
 
 ---
 
-## 4. Enable paper trading
+## 4. Enable demo trading
 
-When health + test webhook look good:
+When health + dry-run webhook look good:
 
-1. Factor env: `TRADING_ENABLED=true`  
-2. Keep `BROKER=paper`  
-3. Watch logs for a few real alerts  
-4. Only later: cTrader (Phase 3)
+1. Set cTrader secrets (see **docs/CTRADER.md**)  
+2. `CTRADER_HOST=demo`, `CTRADER_DRY_RUN=false`  
+3. `TRADING_ENABLED=true`  
+4. Test while market is open; confirm position in cTrader demo  
+5. Only later: `CTRADER_HOST=live` with live account
 
 Emergency stop:
 

@@ -35,10 +35,34 @@ TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false").lower() in (
     "yes",
     "on",
 )
-# paper | ctrader (ctrader not implemented in phase 1)
-BROKER = (os.getenv("BROKER") or "paper").strip().lower()
+# Only real broker path: cTrader Open API (IC Markets demo or live).
+BROKER = (os.getenv("BROKER") or "ctrader").strip().lower()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+
+# ---------------------------------------------------------------------------
+# cTrader Open API (IC Markets demo/live)
+# Register app: https://openapi.ctrader.com/
+# ---------------------------------------------------------------------------
+CTRADER_CLIENT_ID = os.getenv("CTRADER_CLIENT_ID", "").strip()
+CTRADER_CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET", "").strip()
+CTRADER_ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN", "").strip()
+CTRADER_ACCOUNT_ID = os.getenv("CTRADER_ACCOUNT_ID", "").strip()
+# demo → demo.ctraderapi.com · live → live.ctraderapi.com
+_host_raw = (os.getenv("CTRADER_HOST") or "demo").strip().lower()
+if _host_raw in ("live", "prod", "production"):
+    CTRADER_HOST = "live.ctraderapi.com"
+elif "." in _host_raw:
+    CTRADER_HOST = _host_raw  # full hostname override
+else:
+    CTRADER_HOST = "demo.ctraderapi.com"
+# Log order payload without sending (local safety while wiring secrets)
+CTRADER_DRY_RUN = os.getenv("CTRADER_DRY_RUN", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Protects /api/trades and /api/kill when set (recommended on Render).
 # Also accepted as KILL_TOKEN for backwards compatibility.
@@ -98,6 +122,8 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "tp_points": 600,
         "point_size": 0.01,
         "broker_symbol": "XAUUSD",
+        # cTrader: 1.0 lot = this many base units (gold often 100 oz)
+        "lot_units": 100,
     },
     "EUR/USD": {
         "volume_lots": 0.01,
@@ -105,6 +131,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "tp_points": 300,
         "point_size": 0.00001,
         "broker_symbol": "EURUSD",
+        "lot_units": 100_000,
     },
     "USD/JPY": {
         "volume_lots": 0.01,
@@ -112,6 +139,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "tp_points": 300,
         "point_size": 0.001,
         "broker_symbol": "USDJPY",
+        "lot_units": 100_000,
     },
 }
 
