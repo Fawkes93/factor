@@ -1,5 +1,5 @@
 """
-Alert → decision → order plan → broker.
+Alert → decision → order plan → broker open-check → broker order.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from factor.store.state import StateStore
 # Skips that may clear later — do NOT burn the alert_id.
 _RETRYABLE_REASONS = (
     "trading_disabled",
-    "max_open_per_symbol",
     "max_trades_per_day",
     "cooldown",
 )
@@ -37,9 +36,10 @@ def process_alert(
     """
     Handle one alert.
 
-    Permanent skips (wrong kind, neutral, …) and successful/failed broker
-    attempts mark alert_id so we never double-fire. Temporary gates
-    (trading off, limits, cooldown) leave the id free for a later retry.
+    1. Local decide (incl. alert_id de-dupe — same webhook never double-opens)
+    2. Build plan
+    3. Ask cTrader if any open position exists → skip (burn alert_id)
+    4. Place order; mark alert_id processed so retries cannot re-fire
     """
     decision = decide(alert, store)
     if not decision.ok:
@@ -77,6 +77,43 @@ def process_alert(
         return {
             "action": "error",
             "reason": f"plan_error:{e}",
+            "alert_id": alert.alert_id,
+        }
+
+    # Broker is source of truth for open exposure (not SQLite).
+    try:
+        if broker.has_open_position(plan.broker_symbol):
+            reason = "broker_has_open_position"
+            store.mark_processed(
+                alert.alert_id,
+                kind=alert.kind,
+                symbol=alert.symbol,
+                side=alert.side,
+                reason=reason,
+            )
+            print(
+                f"⏭  skip alert_id={alert.alert_id} {alert.kind} "
+                f"{alert.symbol} {alert.side}: {reason}"
+            )
+            return {
+                "action": "skip",
+                "reason": reason,
+                "alert_id": alert.alert_id,
+            }
+    except Exception as e:
+        # Fail closed if broker check itself explodes
+        reason = f"broker_open_check_failed:{e}"
+        store.mark_processed(
+            alert.alert_id,
+            kind=alert.kind,
+            symbol=alert.symbol,
+            side=alert.side,
+            reason=reason,
+        )
+        print(f"⚠️  {reason}")
+        return {
+            "action": "skip",
+            "reason": reason,
             "alert_id": alert.alert_id,
         }
 

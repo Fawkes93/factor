@@ -24,10 +24,16 @@ PT_ACCOUNT_AUTH_RES = 2103
 PT_NEW_ORDER_REQ = 2106
 PT_SYMBOLS_LIST_REQ = 2114
 PT_SYMBOLS_LIST_RES = 2115
+PT_RECONCILE_REQ = 2124
+PT_RECONCILE_RES = 2125
 PT_EXECUTION_EVENT = 2126
 PT_ORDER_ERROR_EVENT = 2132
 PT_ERROR_RES = 2142
 PT_HEARTBEAT = 51  # ProtoHeartbeatEvent (common)
+
+# ProtoOAPositionStatus
+POSITION_STATUS_OPEN = 1
+POSITION_STATUS_CREATED = 2  # still treat as exposure if present
 
 ORDER_TYPE_MARKET = 1
 TRADE_SIDE_BUY = 1
@@ -138,6 +144,65 @@ class CTraderClient:
             f"symbol {broker_symbol!r} not found on account "
             f"(sample: {known}…)"
         )
+
+    def list_open_positions(self) -> list:
+        """
+        ProtoOAReconcileRes — open positions on this account.
+        Returns list of position dicts (may be empty).
+        """
+        msg = self._request(
+            PT_RECONCILE_REQ,
+            {
+                "ctidTraderAccountId": self.account_id,
+                "returnProtectionOrders": False,
+            },
+            expect=PT_RECONCILE_RES,
+        )
+        if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(f"reconcile failed: {msg.get('payload') or msg}")
+        payload = msg.get("payload") or {}
+        positions = payload.get("position") or payload.get("positions") or []
+        if not isinstance(positions, list):
+            return []
+        open_pos = []
+        for p in positions:
+            if not isinstance(p, dict):
+                continue
+            # status: 1=OPEN; some JSON builds omit status when open
+            status = p.get("positionStatus") or p.get("status")
+            if status is None or int(status) in (
+                POSITION_STATUS_OPEN,
+                POSITION_STATUS_CREATED,
+            ):
+                vol = p.get("volume") or p.get("tradeData", {}).get("volume") or 0
+                try:
+                    if int(vol) == 0:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                open_pos.append(p)
+        return open_pos
+
+    def count_open_positions(self, broker_symbol: Optional[str] = None) -> int:
+        """Count open positions, optionally filtered to broker_symbol (e.g. XAUUSD)."""
+        positions = self.list_open_positions()
+        if not broker_symbol:
+            return len(positions)
+        try:
+            sid = self.resolve_symbol_id(broker_symbol)
+        except CTraderError:
+            # Unknown symbol on this account — treat as no matching positions
+            return 0
+        n = 0
+        for p in positions:
+            trade = p.get("tradeData") if isinstance(p.get("tradeData"), dict) else {}
+            psid = p.get("symbolId") or trade.get("symbolId")
+            try:
+                if psid is not None and int(psid) == int(sid):
+                    n += 1
+            except (TypeError, ValueError):
+                continue
+        return n
 
     def place_market(
         self,

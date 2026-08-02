@@ -61,7 +61,9 @@ Optional env overrides still work (`TRADE_KINDS`, `MAX_OPEN_TOTAL`, `PRESETS_JSO
 
 Default XAU range order (in code): **0.01 lot**, **SL 1000 pts**, **TP 1000 pts** (MT points, 1 pt = $0.01).
 
-**Freshness:** only alerts with `triggered_at` younger than **`MAX_ALERT_AGE_SEC`** (default **5s**) can open an order. Catch-up and old history are logged as `alert_too_old` and skipped. Live path is the Reaktor **webhook**; the 60s poll only advances state for stale ids.
+**Freshness:** only alerts with `triggered_at` younger than **`MAX_ALERT_AGE_SEC`** (default **5s**) can open an order. Catch-up and old history are logged as `alert_too_old` and skipped. Live path is the Reaktor **webhook**.
+
+**One position at a time:** before placing, Factor **reconciles open positions on cTrader**. If any are open → skip (log `broker_has_open_position`). When flat → place. **Same `alert_id` never opens twice** (SQLite de-dupe), even after the position is closed.
 
 **Memory (Render 512MB):** Factor is far lighter than Reaktor (no live price WS / chart buffers). Still: single uvicorn worker, cTrader symbol map cached after first load, catch-up page size capped, trade `detail_json` truncated, RSS in `/api/health` (`memory.rss_mb`) and logs every ~15m (warn + `gc.collect` above ~380MB).
 

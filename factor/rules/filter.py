@@ -39,13 +39,14 @@ def alert_age_seconds(alert: AlertData) -> Optional[float]:
 
 def decide(alert: AlertData, store: StateStore) -> Decision:
     """
-    Pure-ish policy check. store is used for de-dupe + rate limits.
+    Local policy only (no broker I/O).
 
-    While any trade is open (status=open), further Reaktor alerts are ignored
-    (permanent skip — alert_id is burned so they do not fire after close).
+    - de-dupe on alert_id (same webhook never opens twice)
+    - kind / symbol / freshness filters
+    - optional local day/cooldown limits
 
-    Stale alerts (older than MAX_ALERT_AGE_SEC) are skipped with a log only —
-    no order. Catch-up history and delayed polls never open positions.
+    Open-position gate is **not** here — engine asks cTrader (reconcile)
+    so closed SL/TP positions do not leave a stale SQLite "open" block.
     """
     if not config.TRADING_ENABLED:
         return Decision(False, "trading_disabled")
@@ -77,16 +78,6 @@ def decide(alert: AlertData, store: StateStore) -> Decision:
                 return Decision(False, f"alert_in_future:{age:.1f}s")
         elif age > max_age:
             return Decision(False, f"alert_too_old:{age:.1f}s>{max_age:g}s")
-
-    # Global: one open position → ignore all other alerts (any symbol/kind).
-    open_total = store.count_open_positions_total()
-    max_total = int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1)
-    if open_total >= max_total:
-        return Decision(False, f"has_open_position:{open_total}")
-
-    open_n = store.count_open_positions(alert.symbol)
-    if open_n >= config.MAX_OPEN_PER_SYMBOL:
-        return Decision(False, f"max_open_per_symbol:{open_n}")
 
     day_n = store.count_trades_today()
     if day_n >= config.MAX_TRADES_PER_DAY:

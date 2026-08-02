@@ -7,6 +7,7 @@ Places market orders with relative SL/TP (demo or live host).
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -41,6 +42,10 @@ class CTraderBroker:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # Short cache so a double webhook does not double-reconcile
+        self._open_cache_at = 0.0
+        self._open_cache_key: Optional[str] = None
+        self._open_cache_val = False
 
     def configured(self) -> bool:
         return bool(
@@ -49,6 +54,56 @@ class CTraderBroker:
             and config.CTRADER_ACCESS_TOKEN
             and config.CTRADER_ACCOUNT_ID
         )
+
+    def has_open_position(self, broker_symbol: Optional[str] = None) -> bool:
+        """
+        Ask cTrader (reconcile) whether the account has an open position.
+        If broker_symbol is set (e.g. XAUUSD), only that symbol counts.
+        """
+        if not self.configured():
+            print("⚠️  has_open_position: cTrader not configured — assuming flat")
+            return False
+        if config.CTRADER_DRY_RUN:
+            # Dry-run still checks live account when creds exist (safer).
+            pass
+
+        key = (broker_symbol or "").upper()
+        now = time.time()
+        with self._lock:
+            if (
+                self._open_cache_key == key
+                and now - self._open_cache_at < 2.0
+            ):
+                return self._open_cache_val
+
+            try:
+                with CTraderClient(
+                    host=config.CTRADER_HOST,
+                    client_id=config.CTRADER_CLIENT_ID,
+                    client_secret=config.CTRADER_CLIENT_SECRET,
+                    access_token=config.CTRADER_ACCESS_TOKEN,
+                    account_id=int(config.CTRADER_ACCOUNT_ID),
+                ) as client:
+                    # Any open position on account blocks (one-at-a-time policy).
+                    # Pass symbol to count only that market if you prefer later.
+                    n = client.count_open_positions(None)
+                    has = n > 0
+                    print(
+                        f"📡 cTrader open positions: {n}"
+                        + (f" (filter {broker_symbol})" if broker_symbol else "")
+                    )
+            except CTraderError as e:
+                print(f"⚠️  has_open_position reconcile failed: {e}")
+                # Fail closed: treat as open so we do not stack risk on unknown state
+                has = True
+            except Exception as e:
+                print(f"⚠️  has_open_position unexpected: {e}")
+                has = True
+
+            self._open_cache_at = now
+            self._open_cache_key = key
+            self._open_cache_val = has
+            return has
 
     def place_market_with_sl_tp(self, plan: OrderPlan) -> OrderResult:
         if not self.configured():
@@ -126,6 +181,8 @@ class CTraderBroker:
                         comment=f"factor alert {plan.alert_id} {plan.kind}",
                         label="factor",
                     )
+                # Invalidate open-position cache after a live order attempt
+                self._open_cache_at = 0.0
             except CTraderError as e:
                 print(f"❌ cTrader error: {e}")
                 return OrderResult(

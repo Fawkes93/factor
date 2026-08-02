@@ -22,7 +22,16 @@ class FakeBroker:
 
     name = "fake"
 
+    def __init__(self, open_position: bool = False) -> None:
+        self._open = open_position
+        self.place_calls = 0
+
+    def has_open_position(self, broker_symbol=None) -> bool:
+        return bool(self._open)
+
     def place_market_with_sl_tp(self, plan: OrderPlan) -> OrderResult:
+        self.place_calls += 1
+        self._open = True  # after a fill, account has exposure
         return OrderResult(
             ok=True,
             status="open",
@@ -107,23 +116,38 @@ def test_trade_and_dedupe(store):
     assert len(trades) == 1
 
 
-def test_open_position_blocks_further_alerts(store):
-    """While any spot is open, ignore other Reaktor alerts (burn alert_id)."""
-    broker = FakeBroker()
+def test_broker_open_position_blocks_further_alerts(store):
+    """cTrader open position → skip new alerts; alert_id still de-duped."""
+    broker = FakeBroker(open_position=False)
     r1 = process_alert(_alert(alert_id=300), store=store, broker=broker)
     assert r1["action"] == "traded"
+    assert broker.place_calls == 1
 
     r2 = process_alert(_alert(alert_id=301, side="DOWN"), store=store, broker=broker)
     assert r2["action"] == "skip"
-    assert r2["reason"].startswith("has_open_position")
+    assert r2["reason"] == "broker_has_open_position"
+    assert broker.place_calls == 1  # no second order
 
-    # Permanent: same alert stays skipped even if we check again
+    # Same alert_id never re-opens even after flat
+    broker._open = False
     r3 = process_alert(_alert(alert_id=301, side="DOWN"), store=store, broker=broker)
     assert r3["action"] == "skip"
     assert r3["reason"] == "duplicate_alert_id"
 
-    trades = store.list_trades()
-    assert len(trades) == 1
+    # New alert_id can trade when flat
+    r4 = process_alert(_alert(alert_id=302), store=store, broker=broker)
+    assert r4["action"] == "traded"
+    assert broker.place_calls == 2
+
+
+def test_same_alert_id_never_double_fires(store):
+    broker = FakeBroker()
+    assert process_alert(_alert(alert_id=500), store=store, broker=broker)["action"] == "traded"
+    broker._open = False  # even if position closed
+    r2 = process_alert(_alert(alert_id=500), store=store, broker=broker)
+    assert r2["action"] == "skip"
+    assert r2["reason"] == "duplicate_alert_id"
+    assert broker.place_calls == 1
 
 
 def test_stale_alert_skipped_no_order(store):
