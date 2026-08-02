@@ -18,8 +18,7 @@
         </div>
         <p class="lead">Sign in by connecting your cTrader account. No password — OAuth only.</p>
         <div class="btn-row">
-          <a class="btn primary" href="/auth/ctrader/login?env=demo">Connect cTrader (demo)</a>
-          <a class="btn ghost" href="/auth/ctrader/login?env=live">Connect live</a>
+          <a class="btn primary" href="/auth/ctrader/login">Connect with cTrader</a>
         </div>
         <p id="login-hint" class="hint muted"></p>
       </div>
@@ -73,7 +72,12 @@
               <h2>Alert settings</h2>
               <button type="button" id="btn-save-prefs" class="btn primary small">Save</button>
             </div>
-            <p class="muted small">Only enabled kinds receive Reaktor alerts and may open orders. Caps are per kind × symbol.</p>
+            <p class="muted small">
+              Enable the alerts you want to trade.
+              <strong>candle</strong> = range expansion ·
+              <strong>spike</strong> = short-window spike.
+              Caps are per kind × symbol.
+            </p>
             <div id="prefs-form"></div>
             <p id="prefs-msg" class="hint"></p>
           </div>

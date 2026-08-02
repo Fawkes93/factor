@@ -174,3 +174,29 @@ def account_id_from_row(row: Dict[str, Any]) -> Optional[int]:
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def host_for_account(account: Optional[Dict[str, Any]]) -> str:
+    """Pick demo/live API host from account flags."""
+    if not account:
+        return "demo.ctraderapi.com"
+    if account.get("isLive") is True:
+        return "live.ctraderapi.com"
+    env = str(account.get("environment") or "").lower()
+    if env in ("live", "prod", "production", "real"):
+        return "live.ctraderapi.com"
+    return "demo.ctraderapi.com"
+
+
+def fetch_accounts_any_host(*, access_token: str) -> tuple:
+    """
+    Try demo host first, then live. Returns (accounts, host_used).
+    """
+    for host in ("demo.ctraderapi.com", "live.ctraderapi.com"):
+        try:
+            accounts = fetch_accounts_for_token(access_token=access_token, host=host)
+            if accounts:
+                return accounts, host
+        except Exception as e:
+            print(f"⚠️  account list on {host}: {e}")
+    return [], "demo.ctraderapi.com"

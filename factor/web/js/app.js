@@ -148,30 +148,73 @@ function renderHomeOrders() {
   $("#home-orders").innerHTML = ordersTable(state.orders.slice(0, 8), "No orders yet.");
 }
 
-function defaultPrefRow() {
-  return {
-    kind: "candle",
-    symbol: "XAU/USD",
-    enabled: false,
-    max_concurrent: 1,
-    max_per_day: 5,
-    volume_lots: 0.01,
-    sl_points: 1000,
-    tp_points: 1000,
-  };
+const ALERT_KINDS = [
+  { id: "candle", label: "Range (candle)" },
+  { id: "spike", label: "Spike" },
+];
+
+function defaultPrefs() {
+  return [
+    {
+      kind: "candle",
+      symbol: "XAU/USD",
+      enabled: false,
+      max_concurrent: 1,
+      max_per_day: 5,
+      volume_lots: 0.01,
+      sl_points: 1000,
+      tp_points: 1000,
+    },
+    {
+      kind: "spike",
+      symbol: "XAU/USD",
+      enabled: false,
+      max_concurrent: 1,
+      max_per_day: 5,
+      volume_lots: 0.01,
+      sl_points: 1000,
+      tp_points: 1000,
+    },
+  ];
+}
+
+/** Ensure both candle + spike rows exist for XAU (merge with server prefs). */
+function mergeDefaultPrefs(serverPrefs) {
+  const defaults = defaultPrefs();
+  const byKey = new Map();
+  for (const p of serverPrefs || []) {
+    byKey.set(`${p.kind}|${p.symbol}`, p);
+  }
+  const out = [];
+  for (const d of defaults) {
+    const key = `${d.kind}|${d.symbol}`;
+    out.push(byKey.has(key) ? { ...d, ...byKey.get(key) } : { ...d });
+    byKey.delete(key);
+  }
+  // keep any extra prefs the user added
+  for (const p of byKey.values()) out.push(p);
+  return out;
+}
+
+function kindSelect(selected) {
+  return ALERT_KINDS.map(
+    (k) =>
+      `<option value="${k.id}" ${k.id === selected ? "selected" : ""}>${escapeHtml(
+        k.label
+      )}</option>`
+  ).join("");
 }
 
 function renderPrefs() {
-  let prefs = state.me?.prefs || [];
-  if (!prefs.length) prefs = [defaultPrefRow()];
+  const prefs = mergeDefaultPrefs(state.me?.prefs || []);
   const root = $("#prefs-form");
   root.innerHTML = prefs
     .map((p, i) => {
       return `
       <div class="pref-row" data-i="${i}">
         <div class="pref-fields">
-          <label class="field">Kind
-            <input type="text" name="kind" value="${escapeHtml(p.kind)}" />
+          <label class="field">Alert type
+            <select name="kind">${kindSelect(p.kind)}</select>
           </label>
           <label class="field">Symbol
             <input type="text" name="symbol" value="${escapeHtml(p.symbol)}" />

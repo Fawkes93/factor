@@ -14,7 +14,8 @@ from factor.auth.ctrader_oauth import (
     account_id_from_row,
     build_authorize_url,
     exchange_code_for_tokens,
-    fetch_accounts_for_token,
+    fetch_accounts_any_host,
+    host_for_account,
     pick_default_account,
 )
 from factor.auth.session import clear_session_cookie, read_session_user_id, set_session_cookie
@@ -40,22 +41,12 @@ def _host_for_env(env: str) -> str:
 
 
 @router.get("/auth/ctrader/login")
-def ctrader_login(env: str = Query(default="demo")):
+def ctrader_login():
     """Start cTrader OAuth (also serves as Factor login)."""
     if not config.CTRADER_CLIENT_ID:
         raise HTTPException(500, "CTRADER_CLIENT_ID not configured")
     url = build_authorize_url(redirect_uri=_redirect_uri(), scope="trading")
-    # stash env in cookie-less query via state is ideal; use simple redirect cookie later
-    resp = RedirectResponse(url, status_code=302)
-    resp.set_cookie(
-        "factor_oauth_env",
-        env if env in ("demo", "live") else "demo",
-        max_age=600,
-        httponly=True,
-        samesite="lax",
-        path="/",
-    )
-    return resp
+    return RedirectResponse(url, status_code=302)
 
 
 @router.get("/auth/ctrader/callback")
@@ -73,9 +64,6 @@ def ctrader_callback(
     if not config.FACTOR_TOKEN_ENC_KEY:
         raise HTTPException(503, "FACTOR_TOKEN_ENC_KEY not configured")
 
-    env = request.cookies.get("factor_oauth_env") or "demo"
-    host = _host_for_env(env)
-
     try:
         tokens = exchange_code_for_tokens(code=code, redirect_uri=_redirect_uri())
     except Exception as e:
@@ -90,14 +78,10 @@ def ctrader_callback(
             datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         ).isoformat().replace("+00:00", "Z")
 
-    try:
-        accounts = fetch_accounts_for_token(access_token=access, host=host)
-    except Exception as e:
-        # Still create user with empty accounts — UI can show error
-        accounts = []
-        print(f"⚠️  OAuth account list failed: {e}")
-
-    account = pick_default_account(accounts, prefer_demo=(env == "demo"))
+    accounts, host_tried = fetch_accounts_any_host(access_token=access)
+    # Prefer demo account when available; host follows the selected account
+    account = pick_default_account(accounts, prefer_demo=True)
+    host = host_for_account(account) if account else host_tried
     account_id = account_id_from_row(account) if account else None
     if account_id is None:
         raise HTTPException(
@@ -136,27 +120,29 @@ def ctrader_callback(
         refresh_token_enc=encrypt_token(refresh or access, config.FACTOR_TOKEN_ENC_KEY),
         access_expires_at=expires_at,
         scopes="trading",
-        raw_meta={"accounts": accounts, "selected": account},
+        raw_meta={"accounts": accounts, "selected": account, "host": host},
     )
 
-    # Default pref: candle XAU disabled until user enables (safe)
+    # Default prefs: range (candle) + spike for XAU — disabled until user enables
     existing = repos.list_prefs(user_id)
-    if not existing:
-        repos.upsert_pref(
-            user_id=user_id,
-            kind="candle",
-            symbol="XAU/USD",
-            enabled=False,
-            max_concurrent=1,
-            max_per_day=5,
-            volume_lots=0.01,
-            sl_points=1000,
-            tp_points=1000,
-        )
+    existing_keys = {(p.get("kind"), p.get("symbol")) for p in existing}
+    for kind in ("candle", "spike"):
+        key = (kind, "XAU/USD")
+        if key not in existing_keys:
+            repos.upsert_pref(
+                user_id=user_id,
+                kind=kind,
+                symbol="XAU/USD",
+                enabled=False,
+                max_concurrent=1,
+                max_per_day=5,
+                volume_lots=0.01,
+                sl_points=1000,
+                tp_points=1000,
+            )
 
     resp = RedirectResponse("/", status_code=302)
     set_session_cookie(resp, user_id)
-    resp.delete_cookie("factor_oauth_env", path="/")
     return resp
 
 

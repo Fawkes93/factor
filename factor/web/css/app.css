@@ -270,7 +270,8 @@ label.field {
   color: var(--muted);
 }
 label.field input[type="text"],
-label.field input[type="number"] {
+label.field input[type="number"],
+label.field select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -279,6 +280,9 @@ label.field input[type="number"] {
   font: inherit;
   font-family: var(--mono);
   font-size: 0.88rem;
+}
+label.field select {
+  font-family: var(--font);
 }
 label.field.checkbox {
   flex-direction: row;
