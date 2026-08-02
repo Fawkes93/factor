@@ -50,22 +50,16 @@ Reaktor alert → HMAC verify → de-dupe → filters → SL/TP presets
 
 ---
 
-## Other config
+## Config: what goes where
 
-| Env | Default | Meaning |
-|-----|---------|---------|
-| `WEBHOOK_SECRET` | — | Match Reaktor webhook secret |
-| `FACTOR_ADMIN_TOKEN` | — | Protects `/api/trades`, `/api/kill` |
-| `REAKTOR_BASE_URL` / `REAKTOR_API_KEY` | — | Catch-up pull |
-| `POLL_INTERVAL_SEC` | `60` | Backup pull |
-| `TRADE_KINDS` | `candle` | Range expansion only (Reaktor live range) |
-| `TRADE_SYMBOLS` | `XAU/USD` | |
-| `MAX_OPEN_TOTAL` | `1` | Ignore all alerts while any position is open |
-| `MAX_OPEN_PER_SYMBOL` | `1` | |
-| `MAX_TRADES_PER_DAY` | `10` | |
-| `COOLDOWN_SEC` | `0` | |
+| Place | What belongs there |
+|-------|--------------------|
+| **Env / `.env` / Render secrets** | Secrets + safety: webhook, admin, Reaktor URL/key, cTrader creds, `TRADING_ENABLED`, `CTRADER_DRY_RUN`, `CTRADER_HOST` |
+| **`factor/config.py`** | Product defaults: `TRADE_KINDS` (`candle` = range), symbols, open limits, cooldown, poll/catch-up, XAU **PRESETS** (lots / SL / TP) |
 
-Default XAU range order: **0.01 lot**, **SL 1000 pts**, **TP 1000 pts** (MT points, 1 pt = $0.01). Edit `factor/config.py` → `PRESETS` or `PRESETS_JSON`.
+Optional env overrides still work (`TRADE_KINDS`, `MAX_OPEN_TOTAL`, `PRESETS_JSON`, …) if you need a one-off without a code change — you do **not** need them in `.env` for normal runs.
+
+Default XAU range order (in code): **0.01 lot**, **SL 1000 pts**, **TP 1000 pts** (MT points, 1 pt = $0.01).
 
 ---
 

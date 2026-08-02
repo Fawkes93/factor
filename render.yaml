@@ -1,10 +1,11 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# Secrets (set in dashboard):
+# Secrets (dashboard only — sync: false):
 #   WEBHOOK_SECRET, REAKTOR_BASE_URL, REAKTOR_API_KEY, FACTOR_ADMIN_TOKEN
 #   CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID
 #
-# Keep TRADING_ENABLED=false until cTrader credentials + a dry-run test work.
+# Product defaults (TRADE_KINDS, SL/TP, open limits, poll) live in factor/config.py.
+# Keep TRADING_ENABLED=false until cTrader + dry-run look good.
 # See docs/DEPLOY.md and docs/CTRADER.md
 
 services:
@@ -27,22 +28,6 @@ services:
         value: "true"
       - key: TRADING_ENABLED
         value: "false"
-      - key: TRADE_KINDS
-        value: candle
-      - key: TRADE_SYMBOLS
-        value: XAU/USD
-      - key: POLL_INTERVAL_SEC
-        value: "60"
-      - key: CATCHUP_ON_START
-        value: "true"
-      - key: MAX_OPEN_TOTAL
-        value: "1"
-      - key: MAX_OPEN_PER_SYMBOL
-        value: "1"
-      - key: MAX_TRADES_PER_DAY
-        value: "10"
-      - key: COOLDOWN_SEC
-        value: "0"
       - key: WEBHOOK_SECRET
         sync: false
       - key: REAKTOR_BASE_URL
