@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import ssl
+import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from websocket import WebSocket, WebSocketTimeoutException, create_connection
 
@@ -32,6 +33,11 @@ ORDER_TYPE_MARKET = 1
 TRADE_SIDE_BUY = 1
 TRADE_SIDE_SELL = 2
 
+# Process-wide symbol map — avoid re-parsing 300+ symbols every order (RAM).
+_symbol_map_cache: Dict[str, int] = {}
+_symbol_map_lock = threading.Lock()
+_symbol_map_account: Optional[int] = None
+
 
 class CTraderError(Exception):
     pass
@@ -42,6 +48,7 @@ class CTraderClient:
     Short-lived session: connect → app auth → account auth → trade → close.
 
     Safe for alert-driven use (one order at a time under a lock).
+    Symbol list is cached process-wide after first successful load.
     """
 
     def __init__(
@@ -110,6 +117,8 @@ class CTraderClient:
             except Exception:
                 pass
             self._ws = None
+        # Drop per-session reference; process cache keeps the map
+        self._symbol_ids = {}
 
     def resolve_symbol_id(self, broker_symbol: str) -> int:
         name = broker_symbol.upper().replace("/", "")
@@ -175,6 +184,15 @@ class CTraderClient:
     # --- internals ---
 
     def _load_symbols(self) -> None:
+        global _symbol_map_cache, _symbol_map_account
+        with _symbol_map_lock:
+            if (
+                _symbol_map_cache
+                and _symbol_map_account == self.account_id
+            ):
+                self._symbol_ids = _symbol_map_cache
+                return
+
         msg = self._request(
             PT_SYMBOLS_LIST_REQ,
             {
@@ -198,8 +216,15 @@ class CTraderClient:
             sid = s.get("symbolId") or s.get("id")
             if name and sid is not None:
                 mapping[str(name).upper()] = int(sid)
+        # Free the raw list ASAP (large JSON payload)
+        del symbols
+        del payload
+        del msg
         self._symbol_ids = mapping
-        print(f"📡 cTrader symbols loaded: {len(mapping)}")
+        with _symbol_map_lock:
+            _symbol_map_cache = mapping
+            _symbol_map_account = self.account_id
+        print(f"📡 cTrader symbols loaded: {len(mapping)} (cached)")
 
     def _request(
         self,

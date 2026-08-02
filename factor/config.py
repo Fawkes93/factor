@@ -112,6 +112,16 @@ COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC") or "0")
 MAX_ALERT_AGE_SEC = float(os.getenv("MAX_ALERT_AGE_SEC") or "5")
 
 # ---------------------------------------------------------------------------
+# Memory (Render 512MB) — logging + soft limits, not hard cgroups
+# ---------------------------------------------------------------------------
+MEMORY_WARN_MB = float(os.getenv("MEMORY_WARN_MB") or "380")
+MEMORY_LOG_INTERVAL_SEC = float(os.getenv("MEMORY_LOG_INTERVAL_SEC") or "900")
+# Max alerts pulled per catch-up/poll request (avoids huge JSON spikes)
+CATCHUP_LIMIT = int(os.getenv("CATCHUP_LIMIT") or "50")
+# Cap stored trade detail_json size (bytes)
+TRADE_DETAIL_MAX_BYTES = int(os.getenv("TRADE_DETAIL_MAX_BYTES") or "4096")
+
+# ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.getenv("FACTOR_DATA_DIR") or "data")

@@ -13,11 +13,14 @@ from factor.api.app import create_app
 def main() -> None:
     app = create_app()
     # Prefer env PORT (Render) already baked into config.PORT
+    # workers=1: single process on 512MB — never double RAM with multi-worker.
     uvicorn.run(
         app,
         host=config.HOST,
         port=config.PORT,
         log_level=os.getenv("LOG_LEVEL", "info"),
+        workers=1,
+        limit_concurrency=50,
     )
 
 

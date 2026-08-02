@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
@@ -18,6 +19,7 @@ from factor.catchup import last_poll_status, run_catchup, start_poll_loop, stop_
 from factor.engine import process_alert
 from factor.inbound.auth import verify_signature
 from factor.inbound.models import parse_cloudevent
+from factor.memory_util import memory_snapshot, memory_watch_loop, rss_mb
 from factor.store.state import StateStore
 
 
@@ -43,6 +45,8 @@ def create_app(
     state_store = store or StateStore(config.DB_PATH)
     broker = get_broker()
 
+    mem_stop = threading.Event()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.store = state_store
@@ -54,6 +58,9 @@ def create_app(
             f"dry_run={config.CTRADER_DRY_RUN} "
             f"kinds={config.TRADE_KINDS} symbols={config.TRADE_SYMBOLS}"
         )
+        mb0 = rss_mb()
+        if mb0 is not None:
+            print(f"🧠 Startup RSS ≈ {mb0} MB (warn at {config.MEMORY_WARN_MB} MB)")
         if not config.WEBHOOK_SECRET:
             print("⚠️  WEBHOOK_SECRET empty — webhooks will 503 until set")
         if not config.FACTOR_ADMIN_TOKEN:
@@ -70,6 +77,18 @@ def create_app(
                 "⚠️  cTrader credentials incomplete — orders will fail until set "
                 "(see docs/CTRADER.md)"
             )
+        # Periodic RSS (Render 512MB) — same idea as Reaktor
+        mem_stop.clear()
+        threading.Thread(
+            target=memory_watch_loop,
+            args=(mem_stop,),
+            kwargs={
+                "interval_sec": float(config.MEMORY_LOG_INTERVAL_SEC),
+                "warn_mb": float(config.MEMORY_WARN_MB),
+            },
+            name="memory-watch",
+            daemon=True,
+        ).start()
         if not skip_catchup:
             try:
                 run_catchup(state_store, broker)
@@ -80,6 +99,7 @@ def create_app(
             except Exception as e:
                 print(f"⚠️  Poll loop start failed: {e}")
         yield
+        mem_stop.set()
         stop_poll_loop()
 
     app = FastAPI(title="Factor", version=__version__, lifespan=lifespan)
@@ -126,6 +146,7 @@ def create_app(
             "admin_token_configured": bool(config.FACTOR_ADMIN_TOKEN),
             "poll": last_poll_status(),
             "stats": st.stats(),
+            "memory": memory_snapshot(),
         }
 
     @app.get("/api/trades")

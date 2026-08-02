@@ -2,6 +2,9 @@
 Pull missed alerts from Reaktor GET /api/v1/alerts?since_id=…
 
 Used on boot and on a background poll loop (backup for webhooks).
+
+Memory: small page size (CATCHUP_LIMIT), no result list accumulation,
+gc after batch — safe for Render 512MB.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from factor import config
 from factor.broker.base import Broker
 from factor.engine import process_alert
 from factor.inbound.models import parse_cloudevent
+from factor.memory_util import maybe_gc
 from factor.store.state import StateStore
 
 _poll_stop = threading.Event()
@@ -32,15 +36,17 @@ def fetch_alerts_since(
     *,
     base_url: str,
     api_key: str,
-    limit: int = 100,
+    limit: Optional[int] = None,
     kind: Optional[str] = None,
     symbol: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if not base_url or not api_key:
         return []
+    lim = int(limit if limit is not None else getattr(config, "CATCHUP_LIMIT", 50) or 50)
+    lim = max(1, min(lim, 100))
     url = f"{base_url.rstrip('/')}/api/v1/alerts"
     headers = {"Authorization": f"Bearer {api_key}"}
-    params: Dict[str, Any] = {"since_id": since_id, "limit": limit}
+    params: Dict[str, Any] = {"since_id": since_id, "limit": lim}
     if kind:
         params["kind"] = kind
     if symbol:
@@ -66,6 +72,7 @@ def run_catchup(
     Pull and process alerts since last_processed_alert_id.
 
     force=True: used by background poll (ignores CATCHUP_ON_START).
+    Does not retain per-alert result dicts (memory).
     """
     if not force and not config.CATCHUP_ON_START:
         return {"skipped": True, "reason": "CATCHUP_ON_START=false"}
@@ -104,33 +111,51 @@ def run_catchup(
         )
         return {"ok": False, "error": str(e), "since_id": since}
 
-    results = []
+    count = 0
+    skipped = 0
+    traded = 0
     for ev in events:
         try:
             alert = parse_cloudevent(ev)
         except Exception as e:
             if not quiet:
                 print(f"⚠️  Catch-up parse skip: {e}")
+            skipped += 1
             continue
-        results.append(process_alert(alert, store=store, broker=broker))
+        result = process_alert(alert, store=store, broker=broker)
+        count += 1
+        if result.get("action") == "traded":
+            traded += 1
+        elif result.get("action") == "skip":
+            skipped += 1
+        # Drop large event payload ASAP
+        del alert
+        del result
 
-    if not quiet or results:
-        print(f"🔄 Catch-up done: {len(results)} event(s) since_id={since}")
+    del events
+    maybe_gc(float(getattr(config, "MEMORY_WARN_MB", 380) or 380))
+
+    if not quiet or count:
+        print(
+            f"🔄 Catch-up done: {count} event(s) since_id={since} "
+            f"(traded={traded} skipped≈{skipped})"
+        )
 
     _last_poll.update(
         {
             "at": time.time(),
             "ok": True,
-            "count": len(results),
+            "count": count,
             "error": None,
             "since_id": since,
+            "traded": traded,
         }
     )
     return {
         "ok": True,
         "since_id": since,
-        "count": len(results),
-        "results": results,
+        "count": count,
+        "traded": traded,
     }
 
 

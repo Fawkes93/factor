@@ -174,6 +174,15 @@ class StateStore:
     ) -> int:
         now = _iso(_utc_now())
         detail_json = json.dumps(detail or {}, default=str)
+        # Cap detail blob so SQLite + RAM stay bounded on 512MB plans
+        try:
+            from factor import config as _cfg
+
+            max_b = int(getattr(_cfg, "TRADE_DETAIL_MAX_BYTES", 4096) or 4096)
+        except Exception:
+            max_b = 4096
+        if max_b > 0 and len(detail_json) > max_b:
+            detail_json = detail_json[: max(0, max_b - 20)] + "…[truncated]"
         with self._lock, self._conn() as conn:
             cur = conn.execute(
                 """

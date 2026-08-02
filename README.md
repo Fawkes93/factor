@@ -63,6 +63,8 @@ Default XAU range order (in code): **0.01 lot**, **SL 1000 pts**, **TP 1000 pts*
 
 **Freshness:** only alerts with `triggered_at` younger than **`MAX_ALERT_AGE_SEC`** (default **5s**) can open an order. Catch-up and old history are logged as `alert_too_old` and skipped. Live path is the Reaktor **webhook**; the 60s poll only advances state for stale ids.
 
+**Memory (Render 512MB):** Factor is far lighter than Reaktor (no live price WS / chart buffers). Still: single uvicorn worker, cTrader symbol map cached after first load, catch-up page size capped, trade `detail_json` truncated, RSS in `/api/health` (`memory.rss_mb`) and logs every ~15m (warn + `gc.collect` above ~380MB).
+
 ---
 
 ## Local run
