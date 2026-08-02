@@ -61,6 +61,8 @@ Optional env overrides still work (`TRADE_KINDS`, `MAX_OPEN_TOTAL`, `PRESETS_JSO
 
 Default XAU range order (in code): **0.01 lot**, **SL 1000 pts**, **TP 1000 pts** (MT points, 1 pt = $0.01).
 
+**Freshness:** only alerts with `triggered_at` younger than **`MAX_ALERT_AGE_SEC`** (default **5s**) can open an order. Catch-up and old history are logged as `alert_too_old` and skipped. Live path is the Reaktor **webhook**; the 60s poll only advances state for stale ids.
+
 ---
 
 ## Local run

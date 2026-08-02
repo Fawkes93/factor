@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,12 @@ from factor.engine import process_alert
 from factor.inbound.models import AlertData
 from factor.rules.presets import OrderPlan
 from factor.store.state import StateStore
+
+
+def _iso_ago(seconds: float) -> str:
+    t = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    return t.isoformat().replace("+00:00", "Z")
+
 
 
 class FakeBroker:
@@ -39,6 +46,7 @@ def _enable_trading(monkeypatch):
     monkeypatch.setattr(config, "MAX_OPEN_PER_SYMBOL", 5)
     monkeypatch.setattr(config, "MAX_TRADES_PER_DAY", 100)
     monkeypatch.setattr(config, "COOLDOWN_SEC", 0)
+    monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
 
 
 def _alert(**kwargs):
@@ -49,6 +57,7 @@ def _alert(**kwargs):
         side="UP",
         price=4000.0,
         timeframe_min=15,
+        triggered_at=_iso_ago(0.5),  # fresh by default
     )
     base.update(kwargs)
     return AlertData(**base)
@@ -115,3 +124,27 @@ def test_open_position_blocks_further_alerts(store):
 
     trades = store.list_trades()
     assert len(trades) == 1
+
+
+def test_stale_alert_skipped_no_order(store):
+    """Catch-up / old alerts: log skip, never hit the broker."""
+    broker = FakeBroker()
+    r = process_alert(
+        _alert(alert_id=400, triggered_at=_iso_ago(30)),
+        store=store,
+        broker=broker,
+    )
+    assert r["action"] == "skip"
+    assert "alert_too_old" in r["reason"]
+    assert store.list_trades() == []
+    assert store.was_processed(400)
+
+
+def test_fresh_alert_still_trades(store):
+    broker = FakeBroker()
+    r = process_alert(
+        _alert(alert_id=401, triggered_at=_iso_ago(1)),
+        store=store,
+        broker=broker,
+    )
+    assert r["action"] == "traded"

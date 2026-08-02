@@ -116,6 +116,7 @@ def create_app(
             "trade_kinds": config.TRADE_KINDS,
             "trade_symbols": config.TRADE_SYMBOLS,
             "max_open_total": int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1),
+            "max_alert_age_sec": float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5),
             "xau_preset": (config.PRESETS.get("XAU/USD") or {}),
             "webhook_configured": bool(config.WEBHOOK_SECRET),
             "reaktor_pull_configured": bool(

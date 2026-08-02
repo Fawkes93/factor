@@ -107,6 +107,9 @@ MAX_OPEN_PER_SYMBOL = int(os.getenv("MAX_OPEN_PER_SYMBOL") or "1")
 MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY") or "10")
 # Cooldown optional; open-position gate is the main concurrency control.
 COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC") or "0")
+# Only place orders if alert is fresher than this (seconds since triggered_at).
+# Catch-up / history and delayed poll pulls will log and skip — no order.
+MAX_ALERT_AGE_SEC = float(os.getenv("MAX_ALERT_AGE_SEC") or "5")
 
 # ---------------------------------------------------------------------------
 # Persistence

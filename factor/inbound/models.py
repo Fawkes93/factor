@@ -91,6 +91,11 @@ def parse_cloudevent(payload: Dict[str, Any]) -> AlertData:
         data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
     )
 
+    # Prefer data.triggered_at; fall back to CloudEvents envelope time
+    triggered_at = data.get("triggered_at") or payload.get("time")
+    if triggered_at is not None:
+        triggered_at = str(triggered_at)
+
     return AlertData(
         alert_id=alert_id,
         kind=kind,
@@ -98,7 +103,7 @@ def parse_cloudevent(payload: Dict[str, Any]) -> AlertData:
         side=side,
         price=price,
         timeframe_min=timeframe_min,
-        triggered_at=data.get("triggered_at"),
+        triggered_at=triggered_at,
         bar_open_time=data.get("bar_open_time"),
         metrics=metrics,
         thresholds=thresholds,

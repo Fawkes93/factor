@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ def test_webhook_happy_path(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "TRADE_KINDS", ["candle"])
     monkeypatch.setattr(config, "TRADE_SYMBOLS", ["XAU/USD"])
     monkeypatch.setattr(config, "COOLDOWN_SEC", 0)
+    monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
     monkeypatch.setattr(config, "CATCHUP_ON_START", False)
     monkeypatch.setattr(config, "POLL_INTERVAL_SEC", 0)
     monkeypatch.setattr(config, "BROKER", "ctrader")
@@ -29,11 +31,13 @@ def test_webhook_happy_path(tmp_path: Path, monkeypatch):
     app = create_app(store=store, skip_catchup=True)
     client = TestClient(app)
 
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     body_obj = {
         "specversion": "1.0",
         "id": "reaktor-alert-42",
         "source": "reaktor",
         "type": "com.reaktor.alert.v1",
+        "time": now,
         "data": {
             "alert_id": 42,
             "kind": "candle",
@@ -41,6 +45,7 @@ def test_webhook_happy_path(tmp_path: Path, monkeypatch):
             "side": "DOWN",
             "price": 4000.0,
             "timeframe_min": 15,
+            "triggered_at": now,
         },
     }
     raw = json.dumps(body_obj, separators=(",", ":")).encode()

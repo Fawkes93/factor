@@ -5,6 +5,8 @@ Decide whether an alert should become a trade.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
 
 from factor import config
 from factor.inbound.models import AlertData
@@ -18,12 +20,32 @@ class Decision:
     # when ok=False: skip | reject | disabled | duplicate | limit
 
 
+def alert_age_seconds(alert: AlertData) -> Optional[float]:
+    """
+    Seconds since alert trigger (UTC). None if timestamp missing/unparseable.
+    """
+    raw = (alert.triggered_at or "").strip()
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return (now - ts.astimezone(timezone.utc)).total_seconds()
+    except Exception:
+        return None
+
+
 def decide(alert: AlertData, store: StateStore) -> Decision:
     """
     Pure-ish policy check. store is used for de-dupe + rate limits.
 
     While any trade is open (status=open), further Reaktor alerts are ignored
     (permanent skip — alert_id is burned so they do not fire after close).
+
+    Stale alerts (older than MAX_ALERT_AGE_SEC) are skipped with a log only —
+    no order. Catch-up history and delayed polls never open positions.
     """
     if not config.TRADING_ENABLED:
         return Decision(False, "trading_disabled")
@@ -42,6 +64,19 @@ def decide(alert: AlertData, store: StateStore) -> Decision:
 
     if alert.symbol not in config.PRESETS:
         return Decision(False, f"no_preset:{alert.symbol}")
+
+    # Freshness: only trade live-ish signals (default 5s).
+    max_age = float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5)
+    if max_age > 0:
+        age = alert_age_seconds(alert)
+        if age is None:
+            return Decision(False, "alert_age_unknown")
+        if age < 0:
+            # Clock skew slightly in the future — allow a small slop
+            if age < -2.0:
+                return Decision(False, f"alert_in_future:{age:.1f}s")
+        elif age > max_age:
+            return Decision(False, f"alert_too_old:{age:.1f}s>{max_age:g}s")
 
     # Global: one open position → ignore all other alerts (any symbol/kind).
     open_total = store.count_open_positions_total()
