@@ -19,6 +19,7 @@ from factor.broker.factory import get_broker
 from factor.catchup import last_poll_status, run_catchup, start_poll_loop, stop_poll_loop
 from factor.db.client import supabase_configured
 from factor.engine import process_alert
+from factor.engine_multi import process_alert_multi
 from factor.inbound.auth import verify_signature
 from factor.inbound.models import parse_cloudevent
 from factor.memory_util import memory_snapshot, memory_watch_loop, rss_mb
@@ -91,7 +92,12 @@ def create_app(
             name="memory-watch",
             daemon=True,
         ).start()
-        if not skip_catchup:
+        if config.MULTI_USER:
+            print(
+                "ℹ️  MULTI_USER=true — boot catch-up trading disabled "
+                "(webhooks fan-out only; freshness still enforced)"
+            )
+        elif not skip_catchup:
             try:
                 run_catchup(state_store, broker)
             except Exception as e:
@@ -239,11 +245,19 @@ def create_app(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        result = process_alert(
-            alert,
-            store=app.state.store,
-            broker=app.state.broker,
-        )
+        if config.MULTI_USER:
+            if not supabase_configured():
+                raise HTTPException(
+                    status_code=503,
+                    detail="MULTI_USER requires Supabase configuration",
+                )
+            result = process_alert_multi(alert)
+        else:
+            result = process_alert(
+                alert,
+                store=app.state.store,
+                broker=app.state.broker,
+            )
         # Always 200 once signature + parse ok so Reaktor does not hammer retries
         # for policy skips.
         return JSONResponse(status_code=200, content=result)

@@ -84,8 +84,18 @@ def calc_sl_tp(
     raise ValueError(f"unknown action {action}")
 
 
-def build_order_plan(alert: AlertData) -> OrderPlan:
+def build_order_plan(
+    alert: AlertData,
+    *,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> OrderPlan:
+    """
+    Build SL/TP plan. Optional overrides (from user prefs): volume_lots,
+    sl_points, tp_points, broker_symbol, point_size, lot_units.
+    """
     preset = resolve_preset(alert.symbol, alert.kind)
+    if overrides:
+        preset.update({k: v for k, v in overrides.items() if v is not None})
     action = _side_to_action(alert.side)
     point_size = float(preset["point_size"])
     sl_points = float(preset["sl_points"])
