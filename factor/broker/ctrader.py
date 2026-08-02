@@ -108,6 +108,43 @@ class CTraderBroker:
     def has_open_position(self, broker_symbol: Optional[str] = None) -> bool:
         return self.count_open_positions(broker_symbol) > 0
 
+    def close_all_positions(self) -> list:
+        """
+        Close all open positions on this account.
+        Returns list of {position_id, ok, message}.
+        """
+        if not self.configured():
+            return [{"ok": False, "message": "cTrader not configured"}]
+        if self._dry_run:
+            n = self.count_open_positions(None)
+            print(f"🛑 dry_run close_all — would close ~{n} position(s)")
+            return [
+                {
+                    "ok": True,
+                    "message": "dry_run — not sent",
+                    "dry_run": True,
+                    "approx_open": n,
+                }
+            ]
+        with self._lock:
+            try:
+                with CTraderClient(
+                    host=self._host,
+                    client_id=self._client_id,
+                    client_secret=self._client_secret,
+                    access_token=self._access_token,
+                    account_id=int(self._account_id),
+                ) as client:
+                    results = client.close_all_positions()
+                self._open_cache_at = 0.0
+                return results
+            except CTraderError as e:
+                print(f"❌ close_all_positions: {e}")
+                return [{"ok": False, "message": str(e)}]
+            except Exception as e:
+                print(f"❌ close_all_positions unexpected: {e}")
+                return [{"ok": False, "message": f"unexpected: {e}"}]
+
     def place_market_with_sl_tp(self, plan: OrderPlan) -> OrderResult:
         if not self.configured():
             return OrderResult(

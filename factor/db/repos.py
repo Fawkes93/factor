@@ -337,6 +337,30 @@ def count_open_orders_db(user_id: str, *, kind: Optional[str] = None) -> int:
     return len(res.data or [])
 
 
+def mark_open_orders_closed(
+    user_id: str,
+    *,
+    reason: str = "kill_switch",
+) -> int:
+    """Mark all status=open orders for user as closed. Returns rows updated (best-effort)."""
+    sb = get_supabase()
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    res = (
+        sb.table(T_ORDERS)
+        .update(
+            {
+                "status": "closed",
+                "closed_at": now,
+                "skip_reason": reason,
+            }
+        )
+        .eq("user_id", user_id)
+        .eq("status", "open")
+        .execute()
+    )
+    return len(res.data or [])
+
+
 # ---------------------------------------------------------------------------
 # Processed alerts (claim-before-place)
 # ---------------------------------------------------------------------------

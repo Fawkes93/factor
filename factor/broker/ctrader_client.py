@@ -22,6 +22,7 @@ PT_APP_AUTH_RES = 2101
 PT_ACCOUNT_AUTH_REQ = 2102
 PT_ACCOUNT_AUTH_RES = 2103
 PT_NEW_ORDER_REQ = 2106
+PT_CLOSE_POSITION_REQ = 2111
 PT_SYMBOLS_LIST_REQ = 2114
 PT_SYMBOLS_LIST_RES = 2115
 PT_RECONCILE_REQ = 2124
@@ -203,6 +204,83 @@ class CTraderClient:
             except (TypeError, ValueError):
                 continue
         return n
+
+    def close_position(self, *, position_id: int, volume: int) -> Dict[str, Any]:
+        """
+        Close (or partially close) a position.
+        volume is protocol units (0.01 of base unit), same as order volume.
+        """
+        if volume <= 0:
+            raise CTraderError(f"close volume must be > 0, got {volume}")
+        payload = {
+            "ctidTraderAccountId": self.account_id,
+            "positionId": int(position_id),
+            "volume": int(volume),
+        }
+        msg = self._request(
+            PT_CLOSE_POSITION_REQ,
+            payload,
+            expect_any=(PT_EXECUTION_EVENT, PT_ORDER_ERROR_EVENT, PT_ERROR_RES),
+        )
+        pt = int(msg.get("payloadType") or 0)
+        body = msg.get("payload") or {}
+        if pt in (PT_ORDER_ERROR_EVENT, PT_ERROR_RES):
+            raise CTraderError(f"close rejected: {body}")
+        return body
+
+    def close_all_positions(self) -> list:
+        """
+        Close every open position. Returns list of result dicts:
+        {position_id, ok, message, detail?}
+        """
+        positions = self.list_open_positions()
+        results = []
+        for p in positions:
+            trade = p.get("tradeData") if isinstance(p.get("tradeData"), dict) else {}
+            pid = p.get("positionId") or p.get("id")
+            vol = p.get("volume") or trade.get("volume") or 0
+            try:
+                pid_i = int(pid)
+                vol_i = int(vol)
+            except (TypeError, ValueError):
+                results.append(
+                    {
+                        "position_id": pid,
+                        "ok": False,
+                        "message": "invalid position id/volume",
+                    }
+                )
+                continue
+            if vol_i <= 0:
+                results.append(
+                    {
+                        "position_id": pid_i,
+                        "ok": False,
+                        "message": "zero volume",
+                    }
+                )
+                continue
+            try:
+                body = self.close_position(position_id=pid_i, volume=vol_i)
+                results.append(
+                    {
+                        "position_id": pid_i,
+                        "ok": True,
+                        "message": "closed",
+                        "detail": body,
+                    }
+                )
+                print(f"🛑 Closed position {pid_i} vol={vol_i}")
+            except CTraderError as e:
+                results.append(
+                    {
+                        "position_id": pid_i,
+                        "ok": False,
+                        "message": str(e),
+                    }
+                )
+                print(f"⚠️  Close position {pid_i} failed: {e}")
+        return results
 
     def place_market(
         self,

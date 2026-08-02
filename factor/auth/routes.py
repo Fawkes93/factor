@@ -198,3 +198,98 @@ def me(request: Request):
         "connection": safe_conn,
         "prefs": prefs,
     }
+
+
+@router.post("/api/me/kill")
+def kill(request: Request):
+    """
+    Per-user kill switch: block new trades + close all open cTrader positions.
+    """
+    uid = read_session_user_id(request)
+    if not uid:
+        raise HTTPException(401, "not logged in")
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase not configured")
+    from factor.services.kill import activate_kill_switch
+
+    try:
+        return activate_kill_switch(uid)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"kill failed: {e}") from e
+
+
+@router.post("/api/me/resume")
+def resume(request: Request):
+    """Clear kill switch; does not re-open positions."""
+    uid = read_session_user_id(request)
+    if not uid:
+        raise HTTPException(401, "not logged in")
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase not configured")
+    from factor.services.kill import resume_trading
+
+    try:
+        return resume_trading(uid)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"resume failed: {e}") from e
+
+
+@router.get("/api/me/orders")
+def my_orders(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    status: Optional[str] = None,
+):
+    uid = read_session_user_id(request)
+    if not uid:
+        raise HTTPException(401, "not logged in")
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase not configured")
+    orders = repos.list_orders(uid, limit=limit, status=status)
+    return {"count": len(orders), "orders": orders}
+
+
+@router.put("/api/me/prefs")
+async def put_prefs(request: Request):
+    """
+    Replace/upsert alert prefs.
+    Body: { "prefs": [ { kind, symbol, enabled, max_concurrent, max_per_day,
+                          volume_lots, sl_points, tp_points }, ... ] }
+    """
+    uid = read_session_user_id(request)
+    if not uid:
+        raise HTTPException(401, "not logged in")
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase not configured")
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, f"invalid JSON: {e}") from e
+    items = body.get("prefs") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        raise HTTPException(400, "prefs must be a list")
+    saved = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind") or "").strip()
+        symbol = str(raw.get("symbol") or "").strip()
+        if not kind or not symbol:
+            continue
+        row = repos.upsert_pref(
+            user_id=uid,
+            kind=kind,
+            symbol=symbol,
+            enabled=bool(raw.get("enabled", False)),
+            max_concurrent=int(raw.get("max_concurrent") or 1),
+            max_per_day=int(raw.get("max_per_day") or 5),
+            volume_lots=float(raw.get("volume_lots") or 0.01),
+            sl_points=int(raw.get("sl_points") or 1000),
+            tp_points=int(raw.get("tp_points") or 1000),
+        )
+        saved.append(row)
+    return {"count": len(saved), "prefs": saved}

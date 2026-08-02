@@ -9,9 +9,18 @@ Branch: `multiuser`
 - [x] Supabase repos (users, connections, prefs, orders, claim de-dupe)
 - [x] cTrader OAuth + sessions (`/auth/ctrader/login`, callback, `/api/me`)
 - [x] Fan-out engine (`process_alert_multi`, claim-before-place, caps)
-- [ ] Kill switch close-all
+- [x] Kill switch close-all (`POST /api/me/kill`, `POST /api/me/resume`)
 - [ ] Dashboard UI
 - [ ] Deploy cutover
+
+## Kill switch
+
+| Path | Effect |
+|------|--------|
+| `POST /api/me/kill` | `kill_switch=true`, close all open cTrader positions, mark open orders closed |
+| `POST /api/me/resume` | `kill_switch=false`, trading allowed again (does not re-open positions) |
+
+While `kill_switch` is true, fan-out skips the user (`kill_switch` reason).
 
 ## Fan-out (PR3)
 
