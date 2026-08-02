@@ -14,8 +14,10 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from factor import __version__, config
+from factor.auth.routes import router as auth_router
 from factor.broker.factory import get_broker
 from factor.catchup import last_poll_status, run_catchup, start_poll_loop, stop_poll_loop
+from factor.db.client import supabase_configured
 from factor.engine import process_alert
 from factor.inbound.auth import verify_signature
 from factor.inbound.models import parse_cloudevent
@@ -112,6 +114,7 @@ def create_app(
     # Available immediately (tests + early requests before lifespan)
     app.state.store = state_store
     app.state.broker = broker
+    app.include_router(auth_router)
 
     @app.get("/")
     def root() -> Dict[str, Any]:
@@ -120,6 +123,8 @@ def create_app(
             "version": __version__,
             "health": "/api/health",
             "webhook": "POST /hooks/reaktor",
+            "login": "/auth/ctrader/login",
+            "multi_user": bool(config.MULTI_USER),
         }
 
     def _health_payload() -> Dict[str, Any]:
@@ -152,6 +157,8 @@ def create_app(
             "poll": last_poll_status(),
             "stats": st.stats(),
             "memory": memory_snapshot(),
+            "multi_user": bool(config.MULTI_USER),
+            "supabase_configured": supabase_configured(),
         }
 
     @app.get("/api/health")

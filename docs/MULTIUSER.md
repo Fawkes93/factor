@@ -7,11 +7,22 @@ Branch: `multiuser`
 - [x] SQL schema (`sql/001_factor_multiuser.sql`)
 - [x] Token encryption helpers
 - [x] Supabase repos (users, connections, prefs, orders, claim de-dupe)
-- [ ] cTrader OAuth + sessions
+- [x] cTrader OAuth + sessions (`/auth/ctrader/login`, callback, `/api/me`)
 - [ ] Fan-out engine
 - [ ] Kill switch close-all
 - [ ] Dashboard UI
 - [ ] Deploy cutover
+
+## OAuth routes
+
+| Path | Purpose |
+|------|---------|
+| `GET /auth/ctrader/login?env=demo` | Start OAuth (`env=live` for live host) |
+| `GET /auth/ctrader/callback` | Exchange code, store encrypted tokens, set session |
+| `POST /auth/logout` | Clear session |
+| `GET /api/me` | Current user + connection (no secrets) + prefs |
+
+Redirect URI must match Open API app settings exactly (`CTRADER_REDIRECT_URI`).
 
 ## Supabase setup
 
