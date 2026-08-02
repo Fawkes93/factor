@@ -58,13 +58,14 @@ Reaktor alert → HMAC verify → de-dupe → filters → SL/TP presets
 | `FACTOR_ADMIN_TOKEN` | — | Protects `/api/trades`, `/api/kill` |
 | `REAKTOR_BASE_URL` / `REAKTOR_API_KEY` | — | Catch-up pull |
 | `POLL_INTERVAL_SEC` | `60` | Backup pull |
-| `TRADE_KINDS` | `candle` | |
+| `TRADE_KINDS` | `candle` | Range expansion only (Reaktor live range) |
 | `TRADE_SYMBOLS` | `XAU/USD` | |
+| `MAX_OPEN_TOTAL` | `1` | Ignore all alerts while any position is open |
 | `MAX_OPEN_PER_SYMBOL` | `1` | |
 | `MAX_TRADES_PER_DAY` | `10` | |
-| `COOLDOWN_SEC` | `300` | |
+| `COOLDOWN_SEC` | `0` | |
 
-SL/TP points: edit `factor/config.py` → `PRESETS` (or `PRESETS_JSON`).
+Default XAU range order: **0.01 lot**, **SL 1000 pts**, **TP 1000 pts** (MT points, 1 pt = $0.01). Edit `factor/config.py` → `PRESETS` or `PRESETS_JSON`.
 
 ---
 

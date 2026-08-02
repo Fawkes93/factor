@@ -212,6 +212,17 @@ class StateStore:
             ).fetchone()
             return int(row["n"] if row else 0)
 
+    def count_open_positions_total(self) -> int:
+        """Open trades across all symbols (status='open')."""
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM trades
+                WHERE status = 'open'
+                """
+            ).fetchone()
+            return int(row["n"] if row else 0)
+
     def count_trades_today(self) -> int:
         # UTC day
         day = _utc_now().strftime("%Y-%m-%d")

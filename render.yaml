@@ -35,12 +35,14 @@ services:
         value: "60"
       - key: CATCHUP_ON_START
         value: "true"
+      - key: MAX_OPEN_TOTAL
+        value: "1"
       - key: MAX_OPEN_PER_SYMBOL
         value: "1"
       - key: MAX_TRADES_PER_DAY
         value: "10"
       - key: COOLDOWN_SEC
-        value: "300"
+        value: "0"
       - key: WEBHOOK_SECRET
         sync: false
       - key: REAKTOR_BASE_URL

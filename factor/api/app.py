@@ -115,6 +115,8 @@ def create_app(
             "trading_enabled": config.TRADING_ENABLED,
             "trade_kinds": config.TRADE_KINDS,
             "trade_symbols": config.TRADE_SYMBOLS,
+            "max_open_total": int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1),
+            "xau_preset": (config.PRESETS.get("XAU/USD") or {}),
             "webhook_configured": bool(config.WEBHOOK_SECRET),
             "reaktor_pull_configured": bool(
                 config.REAKTOR_BASE_URL and config.REAKTOR_API_KEY

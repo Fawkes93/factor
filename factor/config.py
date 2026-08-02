@@ -101,9 +101,12 @@ TRADE_SYMBOLS = _csv_list(os.getenv("TRADE_SYMBOLS"), ["XAU/USD"])
 # ---------------------------------------------------------------------------
 # Risk limits
 # ---------------------------------------------------------------------------
+# One open trade at a time (any symbol). Further Reaktor alerts are ignored.
+MAX_OPEN_TOTAL = int(os.getenv("MAX_OPEN_TOTAL") or "1")
 MAX_OPEN_PER_SYMBOL = int(os.getenv("MAX_OPEN_PER_SYMBOL") or "1")
 MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY") or "10")
-COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC") or "300")
+# Cooldown optional; open-position gate is the main concurrency control.
+COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC") or "0")
 
 # ---------------------------------------------------------------------------
 # Persistence
@@ -114,12 +117,13 @@ DB_PATH = Path(os.getenv("FACTOR_DB_PATH") or str(DATA_DIR / "factor.db"))
 # ---------------------------------------------------------------------------
 # SL / TP presets — MT-style points (same idea as Reaktor points.py)
 # XAU: 1 point = 0.01 price · EUR: 0.00001 · JPY: 0.001
+# Range (kind=candle): 0.01 lot, SL/TP 1000 pts each ($10 on gold).
 # ---------------------------------------------------------------------------
 PRESETS: Dict[str, Dict[str, Any]] = {
     "XAU/USD": {
         "volume_lots": 0.01,
-        "sl_points": 300,
-        "tp_points": 600,
+        "sl_points": 1000,
+        "tp_points": 1000,
         "point_size": 0.01,
         "broker_symbol": "XAUUSD",
         # cTrader: 1.0 lot = this many base units (gold often 100 oz)

@@ -5,7 +5,6 @@ Decide whether an alert should become a trade.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from factor import config
 from factor.inbound.models import AlertData
@@ -22,6 +21,9 @@ class Decision:
 def decide(alert: AlertData, store: StateStore) -> Decision:
     """
     Pure-ish policy check. store is used for de-dupe + rate limits.
+
+    While any trade is open (status=open), further Reaktor alerts are ignored
+    (permanent skip — alert_id is burned so they do not fire after close).
     """
     if not config.TRADING_ENABLED:
         return Decision(False, "trading_disabled")
@@ -41,6 +43,12 @@ def decide(alert: AlertData, store: StateStore) -> Decision:
     if alert.symbol not in config.PRESETS:
         return Decision(False, f"no_preset:{alert.symbol}")
 
+    # Global: one open position → ignore all other alerts (any symbol/kind).
+    open_total = store.count_open_positions_total()
+    max_total = int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1)
+    if open_total >= max_total:
+        return Decision(False, f"has_open_position:{open_total}")
+
     open_n = store.count_open_positions(alert.symbol)
     if open_n >= config.MAX_OPEN_PER_SYMBOL:
         return Decision(False, f"max_open_per_symbol:{open_n}")
@@ -50,7 +58,7 @@ def decide(alert: AlertData, store: StateStore) -> Decision:
         return Decision(False, f"max_trades_per_day:{day_n}")
 
     last_ts = store.last_trade_time(alert.symbol)
-    if last_ts is not None:
+    if last_ts is not None and config.COOLDOWN_SEC > 0:
         age = store.seconds_since(last_ts)
         if age is not None and age < config.COOLDOWN_SEC:
             return Decision(
