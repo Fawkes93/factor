@@ -102,7 +102,13 @@ def create_app(
         mem_stop.set()
         stop_poll_loop()
 
-    app = FastAPI(title="Factor", version=__version__, lifespan=lifespan)
+    # Serve /api/health and /api/health/ the same — no 307 redirect spam from Render probes
+    app = FastAPI(
+        title="Factor",
+        version=__version__,
+        lifespan=lifespan,
+        redirect_slashes=False,
+    )
     # Available immediately (tests + early requests before lifespan)
     app.state.store = state_store
     app.state.broker = broker
@@ -116,8 +122,7 @@ def create_app(
             "webhook": "POST /hooks/reaktor",
         }
 
-    @app.get("/api/health")
-    def health() -> Dict[str, Any]:
+    def _health_payload() -> Dict[str, Any]:
         st = app.state.store
         return {
             "ok": True,
@@ -148,6 +153,11 @@ def create_app(
             "stats": st.stats(),
             "memory": memory_snapshot(),
         }
+
+    @app.get("/api/health")
+    @app.get("/api/health/")
+    def health() -> Dict[str, Any]:
+        return _health_payload()
 
     @app.get("/api/trades")
     def list_trades(
