@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
-from urllib.parse import quote
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -31,13 +30,6 @@ def _redirect_uri() -> str:
         return config.CTRADER_REDIRECT_URI
     # Dev fallback
     return f"http://{config.HOST}:{config.PORT}/auth/ctrader/callback"
-
-
-def _host_for_env(env: str) -> str:
-    e = (env or "demo").strip().lower()
-    if e in ("live", "prod", "production"):
-        return "live.ctraderapi.com"
-    return "demo.ctraderapi.com"
 
 
 @router.get("/auth/ctrader/login")
