@@ -1,6 +1,7 @@
-# IC Markets + cTrader Open API (demo)
+# cTrader Open API (demo)
 
-Factor places **real API orders** on your **cTrader demo** account (fake money).  
+Factor places **real API orders** on a **cTrader demo** account (fake money) via Spotware Open API.  
+Works with **any cTrader broker** (IC Markets is a common example — not required).  
 Same API as live — later you only switch host + account.
 
 Official docs: [help.ctrader.com/open-api](https://help.ctrader.com/open-api/)  

@@ -1,5 +1,5 @@
 """
-IC Markets / cTrader Open API broker.
+cTrader Open API broker (any Spotware/cTrader broker, e.g. IC Markets).
 
 Places market orders with relative SL/TP (demo or live host).
 Supports env credentials (single-tenant) or per-user constructor args (multi-user).

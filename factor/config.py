@@ -35,13 +35,13 @@ TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false").lower() in (
     "yes",
     "on",
 )
-# Only real broker path: cTrader Open API (IC Markets demo or live).
+# Only real broker path: cTrader Open API (any cTrader broker).
 BROKER = (os.getenv("BROKER") or "ctrader").strip().lower()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 # ---------------------------------------------------------------------------
-# cTrader Open API (IC Markets demo/live)
+# cTrader Open API (demo/live hosts — Spotware; works with any cTrader broker)
 # Register app: https://openapi.ctrader.com/
 # ---------------------------------------------------------------------------
 CTRADER_CLIENT_ID = os.getenv("CTRADER_CLIENT_ID", "").strip()

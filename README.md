@@ -2,7 +2,7 @@
 
 Personal **execution** service for [Reaktor](https://github.com/Fawkes93/reaktor) alerts.
 
-Reaktor detects signals. Factor receives them (webhook + pull backup), applies risk rules, and places **market orders with stop loss / take profit** on your **IC Markets cTrader** account (start on **demo**).
+Reaktor detects signals. Factor receives them (webhook + pull backup), applies risk rules, and places **market orders with stop loss / take profit** on a **cTrader** account (any supported broker — e.g. IC Markets). Start on **demo**.
 
 ---
 
@@ -11,7 +11,7 @@ Reaktor detects signals. Factor receives them (webhook + pull backup), applies r
 Full guides:
 
 - **[docs/DEPLOY.md](docs/DEPLOY.md)** — Render + Reaktor wiring  
-- **[docs/CTRADER.md](docs/CTRADER.md)** — IC Markets demo Open API credentials  
+- **[docs/CTRADER.md](docs/CTRADER.md)** — cTrader Open API credentials (IC Markets example)  
 
 Short version:
 
@@ -22,7 +22,7 @@ Short version:
 5. Point Reaktor `REAKTOR_WEBHOOKS` at Factor  
 
 ```
-Reaktor ──webhook──► Factor ──Open API──► cTrader demo (IC Markets)
+Reaktor ──webhook──► Factor ──Open API──► cTrader demo (any cTrader broker)
 ```
 
 ---
