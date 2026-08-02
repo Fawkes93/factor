@@ -85,7 +85,6 @@ class CTraderBroker:
                     account_id=int(config.CTRADER_ACCOUNT_ID),
                 ) as client:
                     # Any open position on account blocks (one-at-a-time policy).
-                    # Pass symbol to count only that market if you prefer later.
                     n = client.count_open_positions(None)
                     has = n > 0
                     print(
@@ -94,11 +93,11 @@ class CTraderBroker:
                     )
             except CTraderError as e:
                 print(f"⚠️  has_open_position reconcile failed: {e}")
-                # Fail closed: treat as open so we do not stack risk on unknown state
-                has = True
+                # Live: fail closed (assume open). Dry-run: fail open so wiring tests work.
+                has = not bool(config.CTRADER_DRY_RUN)
             except Exception as e:
                 print(f"⚠️  has_open_position unexpected: {e}")
-                has = True
+                has = not bool(config.CTRADER_DRY_RUN)
 
             self._open_cache_at = now
             self._open_cache_key = key
