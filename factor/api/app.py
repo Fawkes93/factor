@@ -8,10 +8,12 @@ import json
 import secrets
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from factor import __version__, config
 from factor.auth.routes import router as auth_router
@@ -24,6 +26,9 @@ from factor.inbound.auth import verify_signature
 from factor.inbound.models import parse_cloudevent
 from factor.memory_util import memory_snapshot, memory_watch_loop, rss_mb
 from factor.store.state import StateStore
+
+# factor/web (static dashboard)
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
 def _require_admin(authorization: Optional[str], x_api_key: Optional[str]) -> None:
@@ -122,8 +127,19 @@ def create_app(
     app.state.broker = broker
     app.include_router(auth_router)
 
+    if WEB_DIR.is_dir():
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(WEB_DIR)),
+            name="static",
+        )
+
     @app.get("/")
-    def root() -> Dict[str, Any]:
+    def root():
+        """Dashboard UI when present; else JSON service info."""
+        index = WEB_DIR / "index.html"
+        if index.is_file():
+            return FileResponse(index)
         return {
             "service": "factor",
             "version": __version__,
@@ -131,6 +147,18 @@ def create_app(
             "webhook": "POST /hooks/reaktor",
             "login": "/auth/ctrader/login",
             "multi_user": bool(config.MULTI_USER),
+        }
+
+    @app.get("/api/info")
+    def api_info() -> Dict[str, Any]:
+        return {
+            "service": "factor",
+            "version": __version__,
+            "health": "/api/health",
+            "webhook": "POST /hooks/reaktor",
+            "login": "/auth/ctrader/login",
+            "multi_user": bool(config.MULTI_USER),
+            "supabase_configured": supabase_configured(),
         }
 
     def _health_payload() -> Dict[str, Any]:

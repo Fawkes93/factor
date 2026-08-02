@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Factor</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Login -->
+    <section id="view-login" class="view hidden">
+      <div class="card login-card">
+        <div class="brand">
+          <span class="logo">⚡</span>
+          <h1>Factor</h1>
+          <p class="muted">Execution for Reaktor alerts · IC Markets cTrader</p>
+        </div>
+        <p class="lead">Sign in by connecting your cTrader account. No password — OAuth only.</p>
+        <div class="btn-row">
+          <a class="btn primary" href="/auth/ctrader/login?env=demo">Connect cTrader (demo)</a>
+          <a class="btn ghost" href="/auth/ctrader/login?env=live">Connect live</a>
+        </div>
+        <p id="login-hint" class="hint muted"></p>
+      </div>
+    </section>
+
+    <!-- Main shell -->
+    <section id="view-app" class="view hidden">
+      <header class="topbar">
+        <div class="brand-inline">
+          <span class="logo">⚡</span>
+          <strong>Factor</strong>
+        </div>
+        <nav class="tabs">
+          <button type="button" data-tab="home" class="tab active">Home</button>
+          <button type="button" data-tab="prefs" class="tab">Alerts</button>
+          <button type="button" data-tab="orders" class="tab">Orders</button>
+          <button type="button" data-tab="danger" class="tab">Danger</button>
+        </nav>
+        <div class="top-actions">
+          <span id="user-label" class="muted small"></span>
+          <button type="button" id="btn-logout" class="btn small ghost">Log out</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <!-- Home -->
+        <div id="tab-home" class="tab-panel">
+          <div class="grid two">
+            <div class="card">
+              <h2>Account</h2>
+              <dl class="kv" id="account-kv"></dl>
+            </div>
+            <div class="card">
+              <h2>Status</h2>
+              <dl class="kv" id="status-kv"></dl>
+              <div id="kill-banner" class="banner danger hidden">
+                Kill switch is <strong>ON</strong> — no new trades. Positions were closed on kill.
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Recent orders</h2>
+            <div id="home-orders" class="table-wrap muted">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Prefs -->
+        <div id="tab-prefs" class="tab-panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Alert settings</h2>
+              <button type="button" id="btn-save-prefs" class="btn primary small">Save</button>
+            </div>
+            <p class="muted small">Only enabled kinds receive Reaktor alerts and may open orders. Caps are per kind × symbol.</p>
+            <div id="prefs-form"></div>
+            <p id="prefs-msg" class="hint"></p>
+          </div>
+        </div>
+
+        <!-- Orders -->
+        <div id="tab-orders" class="tab-panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Orders</h2>
+              <button type="button" id="btn-refresh-orders" class="btn small ghost">Refresh</button>
+            </div>
+            <div id="orders-table" class="table-wrap">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Danger -->
+        <div id="tab-danger" class="tab-panel hidden">
+          <div class="card danger-card">
+            <h2>Kill switch</h2>
+            <p>Closes <strong>all open positions</strong> on your linked cTrader account and blocks Factor from placing new trades for you until you resume.</p>
+            <div class="btn-row">
+              <button type="button" id="btn-kill" class="btn danger">Kill — close all &amp; stop</button>
+              <button type="button" id="btn-resume" class="btn primary">Resume trading</button>
+            </div>
+            <pre id="kill-result" class="code hidden"></pre>
+          </div>
+        </div>
+      </main>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -10,8 +10,23 @@ Branch: `multiuser`
 - [x] cTrader OAuth + sessions (`/auth/ctrader/login`, callback, `/api/me`)
 - [x] Fan-out engine (`process_alert_multi`, claim-before-place, caps)
 - [x] Kill switch close-all (`POST /api/me/kill`, `POST /api/me/resume`)
-- [ ] Dashboard UI
+- [x] Dashboard UI (`factor/web/` at `/`)
 - [ ] Deploy cutover
+
+## Dashboard
+
+Open `https://your-factor.onrender.com/` after deploy.
+
+| UI | API |
+|----|-----|
+| Connect cTrader | `/auth/ctrader/login?env=demo\|live` |
+| Home / status | `GET /api/me` |
+| Alert settings | `PUT /api/me/prefs` |
+| Orders | `GET /api/me/orders` |
+| Kill / Resume | `POST /api/me/kill`, `/api/me/resume` |
+| Log out | `POST /auth/logout` |
+
+Static assets: `/static/css/app.css`, `/static/js/app.js`.
 
 ## Kill switch
 
