@@ -122,7 +122,21 @@ CATCHUP_LIMIT = int(os.getenv("CATCHUP_LIMIT") or "50")
 TRADE_DETAIL_MAX_BYTES = int(os.getenv("TRADE_DETAIL_MAX_BYTES") or "4096")
 
 # ---------------------------------------------------------------------------
-# Persistence
+# Supabase (multi-user)
+# ---------------------------------------------------------------------------
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+# Encrypt cTrader tokens at rest (Fernet key or any passphrase)
+FACTOR_TOKEN_ENC_KEY = os.getenv("FACTOR_TOKEN_ENC_KEY", "").strip()
+# Sign browser session cookies
+FACTOR_SESSION_SECRET = os.getenv("FACTOR_SESSION_SECRET", "").strip()
+# cTrader OAuth app redirect (e.g. https://factor-xxx.onrender.com/auth/ctrader/callback)
+CTRADER_REDIRECT_URI = (os.getenv("CTRADER_REDIRECT_URI") or "").strip()
+# Multi-user fan-out mode (big-bang rewrite). When true, engine uses Supabase users.
+MULTI_USER = os.getenv("MULTI_USER", "false").lower() in ("1", "true", "yes", "on")
+
+# ---------------------------------------------------------------------------
+# Persistence (legacy SQLite — de-dupe fallback / local dev)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.getenv("FACTOR_DATA_DIR") or "data")
 DB_PATH = Path(os.getenv("FACTOR_DB_PATH") or str(DATA_DIR / "factor.db"))
