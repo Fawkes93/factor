@@ -1,12 +1,14 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
 # Secrets (dashboard only — sync: false):
-#   WEBHOOK_SECRET, REAKTOR_BASE_URL, REAKTOR_API_KEY, FACTOR_ADMIN_TOKEN
-#   CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID
+#   WEBHOOK_SECRET, FACTOR_ADMIN_TOKEN
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#   FACTOR_TOKEN_ENC_KEY, FACTOR_SESSION_SECRET, CTRADER_REDIRECT_URI
+#   CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET
 #
-# Product defaults (TRADE_KINDS, SL/TP, open limits, poll) live in factor/config.py.
-# Keep TRADING_ENABLED=false until cTrader + dry-run look good.
-# See docs/DEPLOY.md and docs/CTRADER.md
+# Multi-user only: users OAuth cTrader; orders fan out from Reaktor webhooks.
+# Product defaults (SL/TP presets, BE, market-open blackout) live in factor/config.py.
+# See docs/DEPLOY.md, docs/MULTIUSER.md, docs/CTRADER.md
 
 services:
   - type: web
@@ -30,17 +32,19 @@ services:
         value: "false"
       - key: WEBHOOK_SECRET
         sync: false
-      - key: REAKTOR_BASE_URL
-        sync: false
-      - key: REAKTOR_API_KEY
-        sync: false
       - key: FACTOR_ADMIN_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FACTOR_TOKEN_ENC_KEY
+        sync: false
+      - key: FACTOR_SESSION_SECRET
+        sync: false
+      - key: CTRADER_REDIRECT_URI
         sync: false
       - key: CTRADER_CLIENT_ID
         sync: false
       - key: CTRADER_CLIENT_SECRET
-        sync: false
-      - key: CTRADER_ACCESS_TOKEN
-        sync: false
-      - key: CTRADER_ACCOUNT_ID
         sync: false

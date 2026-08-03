@@ -1,8 +1,8 @@
 # Factor
 
-Personal **execution** service for [Reaktor](https://github.com/Fawkes93/reaktor) alerts.
+**Multi-user execution** service for [Reaktor](https://github.com/Fawkes93/reaktor) alerts.
 
-Reaktor detects signals. Factor receives them (webhook + pull backup), applies risk rules, and places **market orders with stop loss / take profit** on a **cTrader** account (any supported broker — e.g. IC Markets). Start on **demo**.
+Reaktor detects signals. Factor receives them (HMAC webhook), fans out to logged-in users with **enabled alert prefs**, and places **market orders with SL/TP** on each user’s **cTrader** account (any supported broker). Start on **demo**.
 
 ---
 
@@ -10,19 +10,22 @@ Reaktor detects signals. Factor receives them (webhook + pull backup), applies r
 
 Full guides:
 
+- **[docs/MULTIUSER.md](docs/MULTIUSER.md)** — architecture, OAuth, Supabase  
 - **[docs/DEPLOY.md](docs/DEPLOY.md)** — Render + Reaktor wiring  
-- **[docs/CTRADER.md](docs/CTRADER.md)** — cTrader Open API credentials (IC Markets example)  
+- **[docs/CTRADER.md](docs/CTRADER.md)** — cTrader Open API app  
 
 Short version:
 
 1. Repo: https://github.com/Fawkes93/factor  
 2. Render Web Service · paid always-on · health `/api/health`  
-3. Secrets: webhook + Reaktor pull + **cTrader** credentials  
-4. Start with `CTRADER_HOST=demo`, `CTRADER_DRY_RUN=true`, `TRADING_ENABLED=false`  
-5. Point Reaktor `REAKTOR_WEBHOOKS` at Factor  
+3. Secrets: webhook, Supabase, OAuth app, token/session secrets, redirect URI  
+4. Run SQL: `sql/001_factor_multiuser.sql` (+ optional `002_breakeven.sql`)  
+5. Start with `CTRADER_HOST=demo`, `CTRADER_DRY_RUN=true`, `TRADING_ENABLED=false`  
+6. Point Reaktor `REAKTOR_WEBHOOKS` at Factor  
+7. Open `/` → Connect with cTrader → enable alert prefs  
 
 ```
-Reaktor ──webhook──► Factor ──Open API──► cTrader demo (any cTrader broker)
+Reaktor ──webhook──► Factor ──fan-out──► each user’s cTrader account
 ```
 
 ---
@@ -30,42 +33,31 @@ Reaktor ──webhook──► Factor ──Open API──► cTrader demo (any 
 ## How it fits
 
 ```
-Reaktor alert → HMAC verify → de-dupe → filters → SL/TP presets
-             → cTrader MARKET order + relative SL/TP
+Reaktor alert → HMAC verify → candidates (pref + trading + not killed)
+             → claim (user, alert_id) → freshness / market-open blackout
+             → cTrader MARKET + SL/TP → factor_orders
+             → optional BE poll (SL → entry at ½ TP)
 ```
+
+There is **no** single-tenant SQLite trading path and **no** Reaktor catch-up trader — webhooks only.
 
 ---
 
-## cTrader env (required for orders)
+## Required env
 
 | Variable | Notes |
 |----------|--------|
-| `CTRADER_CLIENT_ID` | From [openapi.ctrader.com](https://openapi.ctrader.com/) |
-| `CTRADER_CLIENT_SECRET` | App secret |
-| `CTRADER_ACCESS_TOKEN` | OAuth token with **trade** scope |
-| `CTRADER_ACCOUNT_ID` | Demo (or later live) account id |
-| `CTRADER_HOST` | `demo` (default) or `live` |
-| `CTRADER_DRY_RUN` | `true` = log only, no order |
-| `TRADING_ENABLED` | Master switch |
+| `WEBHOOK_SECRET` | Same secret as Reaktor webhook |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Multi-user DB |
+| `FACTOR_TOKEN_ENC_KEY` | Encrypt cTrader tokens at rest |
+| `FACTOR_SESSION_SECRET` | Dashboard session cookies |
+| `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | Open API app |
+| `CTRADER_REDIRECT_URI` | `https://…/auth/ctrader/callback` |
+| `CTRADER_HOST` | `demo` or `live` |
+| `CTRADER_DRY_RUN` | `true` = log only |
+| `TRADING_ENABLED` | Global master switch |
 
----
-
-## Config: what goes where
-
-| Place | What belongs there |
-|-------|--------------------|
-| **Env / `.env` / Render secrets** | Secrets + safety: webhook, admin, Reaktor URL/key, cTrader creds, `TRADING_ENABLED`, `CTRADER_DRY_RUN`, `CTRADER_HOST` |
-| **`factor/config.py`** | Product defaults: `TRADE_KINDS` (`candle` = range), symbols, open limits, cooldown, poll/catch-up, XAU **PRESETS** (lots / SL / TP) |
-
-Optional env overrides still work (`TRADE_KINDS`, `MAX_OPEN_TOTAL`, `PRESETS_JSON`, …) if you need a one-off without a code change — you do **not** need them in `.env` for normal runs.
-
-Default XAU range order (in code): **0.01 lot**, **SL 1000 pts**, **TP 1000 pts** (MT points, 1 pt = $0.01).
-
-**Freshness:** only alerts with `triggered_at` younger than **`MAX_ALERT_AGE_SEC`** (default **5s**) can open an order. Catch-up and old history are logged as `alert_too_old` and skipped. Live path is the Reaktor **webhook**.
-
-**One position at a time:** before placing, Factor **reconciles open positions on cTrader**. If any are open → skip (log `broker_has_open_position`). When flat → place. **Same `alert_id` never opens twice** (SQLite de-dupe), even after the position is closed.
-
-**Memory (Render 512MB):** Factor is far lighter than Reaktor (no live price WS / chart buffers). Still: single uvicorn worker, cTrader symbol map cached after first load, catch-up page size capped, trade `detail_json` truncated, RSS in `/api/health` (`memory.rss_mb`) and logs every ~15m (warn + `gc.collect` above ~380MB).
+Per-user access tokens come from **OAuth login**, not env.
 
 ---
 
@@ -74,10 +66,11 @@ Default XAU range order (in code): **0.01 lot**, **SL 1000 pts**, **TP 1000 pts*
 Python **3.12+**:
 
 ```bash
-cd ~/factor
-source .venv/bin/activate
+cd factor
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # fill cTrader + webhook secrets
+# fill .env with Supabase + OAuth + webhook
 python -m factor
 ```
 
@@ -92,22 +85,8 @@ pytest -q
 - `TRADING_ENABLED=false` by default  
 - Demo host by default  
 - `CTRADER_DRY_RUN` for wiring without orders  
-- De-dupe on `alert_id`, skip `NEUTRAL`, daily/symbol limits  
+- Per-user kill switch on the dashboard  
+- Claim de-dupe on `(user_id, alert_id)`, skip `NEUTRAL`, caps from prefs  
+- Market-open blackout (first 15 minutes after ~01:05 local)  
 
-Live money: only after demo is reliable — set `CTRADER_HOST=live` + live account id.
-
----
-
-## Project layout
-
-```text
-factor/
-├── factor/
-│   ├── broker/ctrader*.py   # Open API client + orders
-│   ├── inbound/             # HMAC + CloudEvent
-│   ├── rules/               # filters + SL/TP
-│   └── api/                 # FastAPI
-├── docs/DEPLOY.md
-├── docs/CTRADER.md
-└── render.yaml
-```
+Live money: only after demo is reliable — set `CTRADER_HOST=live` + live OAuth.

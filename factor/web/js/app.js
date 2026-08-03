@@ -481,8 +481,9 @@ async function loadMe() {
       try {
         const h = await api("/api/health");
         const hints = [];
-        if (!h.supabase_configured) hints.push("Supabase not configured on server.");
-        if (!h.multi_user) hints.push("MULTI_USER is false — set true after deploy for fan-out.");
+        if (!h.supabase_configured) {
+          hints.push("Supabase not configured on server.");
+        }
         $("#login-hint").textContent = hints.join(" ");
       } catch {
         /* ignore */

@@ -1,5 +1,5 @@
 """
-FastAPI app: webhook, health, trades, kill switch.
+FastAPI app: multi-user Factor — webhook fan-out, dashboard, health, admin kill.
 """
 
 from __future__ import annotations
@@ -17,20 +17,16 @@ from fastapi.staticfiles import StaticFiles
 
 from factor import __version__, config
 from factor.auth.routes import router as auth_router
-from factor.broker.factory import get_broker
-from factor.catchup import last_poll_status, run_catchup, start_poll_loop, stop_poll_loop
+from factor.db.client import supabase_configured
+from factor.engine_multi import process_alert_multi
+from factor.inbound.auth import verify_signature
+from factor.inbound.models import parse_cloudevent
+from factor.memory_util import memory_snapshot, memory_watch_loop, rss_mb
 from factor.services.breakeven import (
     last_breakeven_status,
     start_breakeven_loop,
     stop_breakeven_loop,
 )
-from factor.db.client import supabase_configured
-from factor.engine import process_alert
-from factor.engine_multi import process_alert_multi
-from factor.inbound.auth import verify_signature
-from factor.inbound.models import parse_cloudevent
-from factor.memory_util import memory_snapshot, memory_watch_loop, rss_mb
-from factor.store.state import StateStore
 
 # factor/web (static dashboard)
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -50,26 +46,17 @@ def _require_admin(authorization: Optional[str], x_api_key: Optional[str]) -> No
         raise HTTPException(status_code=401, detail="admin auth required")
 
 
-def create_app(
-    *,
-    store: Optional[StateStore] = None,
-    skip_catchup: bool = False,
-) -> FastAPI:
-    state_store = store or StateStore(config.DB_PATH)
-    broker = get_broker()
-
+def create_app() -> FastAPI:
     mem_stop = threading.Event()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.store = state_store
-        app.state.broker = broker
         print(
-            f"🚀 Factor v{__version__} broker={config.BROKER} "
+            f"🚀 Factor v{__version__} multi-user "
             f"host={config.CTRADER_HOST} "
             f"trading_enabled={config.TRADING_ENABLED} "
             f"dry_run={config.CTRADER_DRY_RUN} "
-            f"kinds={config.TRADE_KINDS} symbols={config.TRADE_SYMBOLS}"
+            f"supabase={supabase_configured()}"
         )
         mb0 = rss_mb()
         if mb0 is not None:
@@ -77,20 +64,27 @@ def create_app(
         if not config.WEBHOOK_SECRET:
             print("⚠️  WEBHOOK_SECRET empty — webhooks will 503 until set")
         if not config.FACTOR_ADMIN_TOKEN:
+            print("⚠️  FACTOR_ADMIN_TOKEN unset — /api/kill is open")
+        if not supabase_configured():
             print(
-                "⚠️  FACTOR_ADMIN_TOKEN unset — /api/trades and /api/kill are open"
+                "⚠️  Supabase not configured — webhooks and login will 503 "
+                "(set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)"
+            )
+        if not (config.CTRADER_CLIENT_ID and config.CTRADER_CLIENT_SECRET):
+            print(
+                "⚠️  cTrader OAuth app incomplete — set CTRADER_CLIENT_ID / "
+                "CTRADER_CLIENT_SECRET (see docs/CTRADER.md)"
             )
         if not (
-            config.CTRADER_CLIENT_ID
-            and config.CTRADER_CLIENT_SECRET
-            and config.CTRADER_ACCESS_TOKEN
-            and config.CTRADER_ACCOUNT_ID
+            config.FACTOR_TOKEN_ENC_KEY
+            and config.FACTOR_SESSION_SECRET
+            and config.CTRADER_REDIRECT_URI
         ):
             print(
-                "⚠️  cTrader credentials incomplete — orders will fail until set "
-                "(see docs/CTRADER.md)"
+                "⚠️  Multi-user secrets incomplete — set FACTOR_TOKEN_ENC_KEY, "
+                "FACTOR_SESSION_SECRET, CTRADER_REDIRECT_URI"
             )
-        # Periodic RSS (Render 512MB) — same idea as Reaktor
+
         mem_stop.clear()
         threading.Thread(
             target=memory_watch_loop,
@@ -102,39 +96,23 @@ def create_app(
             name="memory-watch",
             daemon=True,
         ).start()
-        if config.MULTI_USER:
-            print(
-                "ℹ️  MULTI_USER=true — boot catch-up trading disabled "
-                "(webhooks fan-out only; freshness still enforced)"
-            )
-            try:
-                start_breakeven_loop()
-            except Exception as e:
-                print(f"⚠️  Breakeven loop start failed: {e}")
-        elif not skip_catchup:
-            try:
-                run_catchup(state_store, broker)
-            except Exception as e:
-                print(f"⚠️  Catch-up error (continuing): {e}")
-            try:
-                start_poll_loop(state_store, broker)
-            except Exception as e:
-                print(f"⚠️  Poll loop start failed: {e}")
+
+        print("ℹ️  Webhook fan-out only (no single-tenant catch-up / SQLite engine)")
+        try:
+            start_breakeven_loop()
+        except Exception as e:
+            print(f"⚠️  Breakeven loop start failed: {e}")
+
         yield
         mem_stop.set()
-        stop_poll_loop()
         stop_breakeven_loop()
 
-    # Serve /api/health and /api/health/ the same — no 307 redirect spam from Render probes
     app = FastAPI(
         title="Factor",
         version=__version__,
         lifespan=lifespan,
         redirect_slashes=False,
     )
-    # Available immediately (tests + early requests before lifespan)
-    app.state.store = state_store
-    app.state.broker = broker
     app.include_router(auth_router)
 
     if WEB_DIR.is_dir():
@@ -156,7 +134,7 @@ def create_app(
             "health": "/api/health",
             "webhook": "POST /hooks/reaktor",
             "login": "/auth/ctrader/login",
-            "multi_user": bool(config.MULTI_USER),
+            "mode": "multi_user",
         }
 
     @app.get("/api/info")
@@ -167,23 +145,20 @@ def create_app(
             "health": "/api/health",
             "webhook": "POST /hooks/reaktor",
             "login": "/auth/ctrader/login",
-            "multi_user": bool(config.MULTI_USER),
+            "mode": "multi_user",
             "supabase_configured": supabase_configured(),
         }
 
     def _health_payload() -> Dict[str, Any]:
-        st = app.state.store
         return {
             "ok": True,
             "service": "factor",
             "version": __version__,
+            "mode": "multi_user",
             "broker": config.BROKER,
             "ctrader_host": config.CTRADER_HOST,
-            "ctrader_configured": bool(
-                config.CTRADER_CLIENT_ID
-                and config.CTRADER_CLIENT_SECRET
-                and config.CTRADER_ACCESS_TOKEN
-                and config.CTRADER_ACCOUNT_ID
+            "ctrader_oauth_configured": bool(
+                config.CTRADER_CLIENT_ID and config.CTRADER_CLIENT_SECRET
             ),
             "ctrader_dry_run": config.CTRADER_DRY_RUN,
             "trading_enabled": config.TRADING_ENABLED,
@@ -198,20 +173,15 @@ def create_app(
             "market_open_blackout_minutes": int(
                 getattr(config, "MARKET_OPEN_BLACKOUT_MINUTES", 15) or 15
             ),
-            "max_open_total": int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1),
             "max_alert_age_sec": float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5),
             "xau_preset": (config.PRESETS.get("XAU/USD") or {}),
             "webhook_configured": bool(config.WEBHOOK_SECRET),
-            "reaktor_pull_configured": bool(
-                config.REAKTOR_BASE_URL and config.REAKTOR_API_KEY
-            ),
-            "poll_interval_sec": config.POLL_INTERVAL_SEC,
             "admin_token_configured": bool(config.FACTOR_ADMIN_TOKEN),
-            "poll": last_poll_status(),
-            "stats": st.stats(),
             "memory": memory_snapshot(),
-            "multi_user": bool(config.MULTI_USER),
             "supabase_configured": supabase_configured(),
+            "session_configured": bool(config.FACTOR_SESSION_SECRET),
+            "token_enc_configured": bool(config.FACTOR_TOKEN_ENC_KEY),
+            "redirect_uri_configured": bool(config.CTRADER_REDIRECT_URI),
         }
 
     @app.get("/api/health")
@@ -225,9 +195,16 @@ def create_app(
         authorization: Optional[str] = Header(default=None),
         x_api_key: Optional[str] = Header(default=None),
     ) -> Dict[str, Any]:
+        """
+        Legacy admin endpoint (was SQLite single-tenant trades).
+        Multi-user orders live in Supabase — use dashboard /api/me/orders.
+        """
         _require_admin(authorization, x_api_key)
-        trades = app.state.store.list_trades(limit=limit)
-        return {"count": len(trades), "trades": trades}
+        return {
+            "count": 0,
+            "trades": [],
+            "note": "multi_user — use GET /api/me/orders while logged in",
+        }
 
     @app.post("/api/kill")
     async def kill(
@@ -236,9 +213,9 @@ def create_app(
         x_kill_token: Optional[str] = Header(default=None),
     ) -> Dict[str, Any]:
         """
-        Disable trading in-process until process restart / env change.
+        Global process kill: set TRADING_ENABLED=false until restart.
+        Per-user kill is POST /api/me/kill on the dashboard.
         """
-        # Accept admin token or legacy X-Kill-Token
         if config.FACTOR_ADMIN_TOKEN:
             try:
                 _require_admin(authorization, x_api_key)
@@ -248,17 +225,8 @@ def create_app(
                 ):
                     raise HTTPException(status_code=401, detail="admin auth required")
         config.TRADING_ENABLED = False
-        print("🛑 KILL switch: TRADING_ENABLED=false")
+        print("🛑 KILL switch: TRADING_ENABLED=false (global)")
         return {"ok": True, "trading_enabled": False}
-
-    @app.post("/api/catchup")
-    def manual_catchup(
-        authorization: Optional[str] = Header(default=None),
-        x_api_key: Optional[str] = Header(default=None),
-    ) -> Dict[str, Any]:
-        """Force a pull from Reaktor (admin)."""
-        _require_admin(authorization, x_api_key)
-        return run_catchup(app.state.store, app.state.broker, force=True)
 
     @app.post("/hooks/reaktor")
     async def reaktor_hook(
@@ -282,6 +250,12 @@ def create_app(
             )
             raise HTTPException(status_code=401, detail="invalid signature")
 
+        if not supabase_configured():
+            raise HTTPException(
+                status_code=503,
+                detail="Supabase not configured (required for multi-user Factor)",
+            )
+
         try:
             payload = json.loads(raw.decode("utf-8"))
         except Exception as e:
@@ -292,19 +266,7 @@ def create_app(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        if config.MULTI_USER:
-            if not supabase_configured():
-                raise HTTPException(
-                    status_code=503,
-                    detail="MULTI_USER requires Supabase configuration",
-                )
-            result = process_alert_multi(alert)
-        else:
-            result = process_alert(
-                alert,
-                store=app.state.store,
-                broker=app.state.broker,
-            )
+        result = process_alert_multi(alert)
         # Always 200 once signature + parse ok so Reaktor does not hammer retries
         # for policy skips.
         return JSONResponse(status_code=200, content=result)

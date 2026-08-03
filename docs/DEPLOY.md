@@ -64,9 +64,9 @@ openssl rand -hex 24
 | `REAKTOR_BASE_URL` | `https://YOUR-REAKTOR.onrender.com` (no trailing slash) |
 | `REAKTOR_API_KEY` | your `rk_…` |
 | `FACTOR_ADMIN_TOKEN` | admin secret |
-| `TRADE_KINDS` | `candle` |
-| `TRADE_SYMBOLS` | `XAU/USD` |
-| `POLL_INTERVAL_SEC` | `60` |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | required (multi-user only) |
+| `FACTOR_TOKEN_ENC_KEY` / `FACTOR_SESSION_SECRET` | token + cookie crypto |
+| `CTRADER_REDIRECT_URI` | OAuth callback URL |
 | `MARKET_OPEN_BLACKOUT` | `true` — skip alerts in first minutes after open |
 | `MARKET_OPEN_TIME` | `01:05` (local wall clock in `MARKET_OPEN_TZ`) |
 | `MARKET_OPEN_TZ` | `Europe/Bucharest` |

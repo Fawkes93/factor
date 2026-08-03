@@ -34,7 +34,7 @@ def _alert(**kwargs) -> AlertData:
 
 @pytest.fixture(autouse=True)
 def _mu_flags(monkeypatch):
-    monkeypatch.setattr(config, "MULTI_USER", True)
+    monkeypatch.setattr(config, "TRADING_ENABLED", True)
     monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
     monkeypatch.setattr(config, "CTRADER_DRY_RUN", True)
     monkeypatch.setattr(config, "FACTOR_TOKEN_ENC_KEY", "test-enc-key-for-multi")

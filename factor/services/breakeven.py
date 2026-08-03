@@ -451,8 +451,8 @@ def run_breakeven_cycle() -> Dict[str, Any]:
     if not getattr(config, "BREAKEVEN_ENABLED", True):
         out["reason"] = "breakeven_disabled"
         return out
-    if not config.MULTI_USER or not supabase_configured():
-        out["reason"] = "multi_user_or_supabase_off"
+    if not supabase_configured():
+        out["reason"] = "supabase_not_configured"
         return out
     if not config.FACTOR_TOKEN_ENC_KEY:
         out["reason"] = "token_enc_key_missing"
@@ -555,8 +555,8 @@ def start_breakeven_loop() -> None:
     if not getattr(config, "BREAKEVEN_ENABLED", True):
         print("ℹ️  BREAKEVEN_ENABLED=false — no BE poll")
         return
-    if not config.MULTI_USER:
-        print("ℹ️  Breakeven poll only runs in MULTI_USER mode")
+    if not supabase_configured():
+        print("ℹ️  Breakeven poll skipped — Supabase not configured")
         return
     if _be_thread and _be_thread.is_alive():
         return

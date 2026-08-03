@@ -1,7 +1,8 @@
 """
 Multi-user fan-out: one Reaktor alert → zero or more user orders.
 
-Requires MULTI_USER=true and Supabase configured.
+This is the only execution path (single-tenant SQLite engine removed).
+Requires Supabase + per-user cTrader connections and enabled prefs.
 """
 
 from __future__ import annotations
@@ -215,6 +216,16 @@ def process_alert_multi(alert: AlertData) -> Dict[str, Any]:
     """
     Fan-out one alert to all eligible users (sequential, 512MB-safe).
     """
+    if not config.TRADING_ENABLED:
+        print(f"⏭  fan-out skip alert_id={alert.alert_id}: trading_disabled")
+        return {
+            "action": "fanout",
+            "alert_id": alert.alert_id,
+            "users": 0,
+            "results": [],
+            "reason": "trading_disabled",
+        }
+
     if alert.side == "NEUTRAL" or not alert.is_directional:
         print(f"⏭  fan-out skip alert_id={alert.alert_id}: side_neutral")
         return {

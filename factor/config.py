@@ -72,21 +72,13 @@ FACTOR_ADMIN_TOKEN = (
 KILL_TOKEN = FACTOR_ADMIN_TOKEN  # alias
 
 # ---------------------------------------------------------------------------
-# Reaktor catch-up + backup poll (important on Render after restarts)
+# Reaktor (webhook is the live path; URL/key optional legacy)
 # ---------------------------------------------------------------------------
 REAKTOR_BASE_URL = (os.getenv("REAKTOR_BASE_URL") or "").rstrip("/")
 REAKTOR_API_KEY = os.getenv("REAKTOR_API_KEY", "").strip()
-CATCHUP_ON_START = os.getenv("CATCHUP_ON_START", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-# Seconds between pull-API polls. 0 = off. Default 60 so missed webhooks recover.
-POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC") or "60")
 
 # ---------------------------------------------------------------------------
-# What to trade (configurable — change without code edits)
+# What to trade (legacy defaults / docs; multi-user uses per-user prefs)
 # ---------------------------------------------------------------------------
 def _csv_list(raw: Optional[str], default: List[str]) -> List[str]:
     if raw is None or not str(raw).strip():
@@ -166,11 +158,11 @@ FACTOR_TOKEN_ENC_KEY = os.getenv("FACTOR_TOKEN_ENC_KEY", "").strip()
 FACTOR_SESSION_SECRET = os.getenv("FACTOR_SESSION_SECRET", "").strip()
 # cTrader OAuth app redirect (e.g. https://factor-xxx.onrender.com/auth/ctrader/callback)
 CTRADER_REDIRECT_URI = (os.getenv("CTRADER_REDIRECT_URI") or "").strip()
-# Multi-user fan-out mode (big-bang rewrite). When true, engine uses Supabase users.
-MULTI_USER = os.getenv("MULTI_USER", "false").lower() in ("1", "true", "yes", "on")
+# Multi-user is the only mode (kept True for older health checks / env docs).
+MULTI_USER = True
 
 # ---------------------------------------------------------------------------
-# Persistence (legacy SQLite — de-dupe fallback / local dev)
+# Persistence (optional local data dir; order state lives in Supabase)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.getenv("FACTOR_DATA_DIR") or "data")
 DB_PATH = Path(os.getenv("FACTOR_DB_PATH") or str(DATA_DIR / "factor.db"))
