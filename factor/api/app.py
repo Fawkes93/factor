@@ -122,6 +122,15 @@ def create_app() -> FastAPI:
             name="static",
         )
 
+    @app.get("/favicon.ico")
+    @app.get("/favicon.svg")
+    def favicon():
+        """Browsers request /favicon.ico by default."""
+        icon = WEB_DIR / "favicon.svg"
+        if icon.is_file():
+            return FileResponse(icon, media_type="image/svg+xml")
+        raise HTTPException(status_code=404, detail="no favicon")
+
     @app.get("/")
     def root():
         """Dashboard UI when present; else JSON service info."""
