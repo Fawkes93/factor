@@ -180,6 +180,7 @@ function newPref(kind = "candle") {
     volume_lots: 0.01,
     sl_points: 1000,
     tp_points: 1000,
+    breakeven_half_tp: true,
   };
 }
 
@@ -357,6 +358,12 @@ function renderPrefs() {
               p.tp_points ?? 1000
             )}" />
           </label>
+          <label class="field field-check" title="When price reaches half of TP distance, move SL to entry (breakeven)">
+            <span>BE at ½ TP</span>
+            <input type="checkbox" name="breakeven_half_tp" ${
+              p.breakeven_half_tp !== false ? "checked" : ""
+            } />
+          </label>
         </div>
       </div>`;
     })
@@ -427,6 +434,7 @@ function collectPrefsFromDom() {
     const i = Number(card.dataset.i);
     if (!prefsDraft[i]) return;
     const g = (name) => card.querySelector(`[name="${name}"]`);
+    const beEl = g("breakeven_half_tp");
     prefsDraft[i] = {
       kind: g("kind").value.trim(),
       symbol: g("symbol").value.trim(),
@@ -436,6 +444,7 @@ function collectPrefsFromDom() {
       volume_lots: Number(g("volume_lots").value),
       sl_points: Number(g("sl_points").value),
       tp_points: Number(g("tp_points").value),
+      breakeven_half_tp: beEl ? beEl.checked : true,
     };
   });
   return prefsDraft.slice();

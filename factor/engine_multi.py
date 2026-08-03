@@ -15,6 +15,7 @@ from factor.db import repos
 from factor.inbound.models import AlertData
 from factor.rules.filter import alert_age_seconds
 from factor.rules.presets import build_order_plan
+from factor.services.breakeven import build_breakeven_order_detail
 
 
 def _pref_overrides(pref: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,6 +152,9 @@ def process_alert_for_user(
         status = "open"
 
     order_side = plan.side  # BUY/SELL
+    pos_id = None
+    if isinstance(result.detail, dict):
+        pos_id = result.detail.get("position_id")
     try:
         order_row = repos.insert_order(
             user_id=user_id,
@@ -165,10 +169,12 @@ def process_alert_for_user(
             tp_price=plan.tp_price,
             volume_lots=plan.volume_lots,
             broker_order_id=result.broker_order_id,
+            broker_position_id=str(pos_id) if pos_id is not None else None,
             detail={
                 "broker_message": result.message,
                 "broker_detail": result.detail,
                 "ok": result.ok,
+                "breakeven": build_breakeven_order_detail(plan=plan, pref=pref),
             },
         )
         order_id = order_row.get("id")

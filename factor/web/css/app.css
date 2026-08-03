@@ -410,6 +410,19 @@ label.field select {
 label.field select {
   font-family: var(--font);
 }
+label.field.field-check {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 18px;
+}
+label.field.field-check input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ok);
+  cursor: pointer;
+}
 
 .code {
   margin-top: 14px;

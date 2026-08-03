@@ -112,6 +112,21 @@ COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC") or "0")
 MAX_ALERT_AGE_SEC = float(os.getenv("MAX_ALERT_AGE_SEC") or "5")
 
 # ---------------------------------------------------------------------------
+# Breakeven protection (open positions)
+# When favorable move reaches FRACTION of TP distance, move SL to entry
+# (± BUFFER points so spread doesn't scratch you instantly).
+# ---------------------------------------------------------------------------
+BREAKEVEN_ENABLED = os.getenv("BREAKEVEN_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+BREAKEVEN_FRACTION = float(os.getenv("BREAKEVEN_FRACTION") or "0.5")  # half of TP
+BREAKEVEN_BUFFER_POINTS = float(os.getenv("BREAKEVEN_BUFFER_POINTS") or "0")
+BREAKEVEN_POLL_SEC = float(os.getenv("BREAKEVEN_POLL_SEC") or "15")
+
+# ---------------------------------------------------------------------------
 # Memory (Render 512MB) — logging + soft limits, not hard cgroups
 # ---------------------------------------------------------------------------
 MEMORY_WARN_MB = float(os.getenv("MEMORY_WARN_MB") or "380")

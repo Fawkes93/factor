@@ -12,7 +12,7 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from websocket import WebSocket, WebSocketTimeoutException, create_connection
 
@@ -22,12 +22,17 @@ PT_APP_AUTH_RES = 2101
 PT_ACCOUNT_AUTH_REQ = 2102
 PT_ACCOUNT_AUTH_RES = 2103
 PT_NEW_ORDER_REQ = 2106
+PT_AMEND_POSITION_SLTP_REQ = 2110
 PT_CLOSE_POSITION_REQ = 2111
 PT_SYMBOLS_LIST_REQ = 2114
 PT_SYMBOLS_LIST_RES = 2115
 PT_RECONCILE_REQ = 2124
 PT_RECONCILE_RES = 2125
 PT_EXECUTION_EVENT = 2126
+PT_SUBSCRIBE_SPOTS_REQ = 2127
+PT_SUBSCRIBE_SPOTS_RES = 2128
+PT_SPOT_EVENT = 2129
+PT_UNSUBSCRIBE_SPOTS_REQ = 2130
 PT_ORDER_ERROR_EVENT = 2132
 PT_ERROR_RES = 2142
 PT_HEARTBEAT = 51  # ProtoHeartbeatEvent (common)
@@ -228,6 +233,143 @@ class CTraderClient:
             raise CTraderError(f"close rejected: {body}")
         return body
 
+    def amend_position_sl_tp(
+        self,
+        *,
+        position_id: int,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        ProtoOAAmendPositionSLTPReq (2110) — absolute stopLoss / takeProfit prices.
+        """
+        payload: Dict[str, Any] = {
+            "ctidTraderAccountId": self.account_id,
+            "positionId": int(position_id),
+        }
+        if stop_loss is not None:
+            payload["stopLoss"] = float(stop_loss)
+        if take_profit is not None:
+            payload["takeProfit"] = float(take_profit)
+        if "stopLoss" not in payload and "takeProfit" not in payload:
+            raise CTraderError("amend requires stopLoss and/or takeProfit")
+        msg = self._request(
+            PT_AMEND_POSITION_SLTP_REQ,
+            payload,
+            expect_any=(PT_EXECUTION_EVENT, PT_ORDER_ERROR_EVENT, PT_ERROR_RES),
+        )
+        pt = int(msg.get("payloadType") or 0)
+        body = msg.get("payload") or {}
+        if pt in (PT_ORDER_ERROR_EVENT, PT_ERROR_RES):
+            raise CTraderError(f"amend SL/TP rejected: {body}")
+        return body
+
+    def get_spot(self, broker_symbol: str) -> Dict[str, float]:
+        """
+        Subscribe to spots, wait for one ProtoOASpotEvent, unsubscribe.
+        Returns {bid, ask, symbol_id}.
+        """
+        symbol_id = self.resolve_symbol_id(broker_symbol)
+        # Subscribe
+        sub = self._request(
+            PT_SUBSCRIBE_SPOTS_REQ,
+            {
+                "ctidTraderAccountId": self.account_id,
+                "symbolId": [int(symbol_id)],
+            },
+            expect_any=(PT_SUBSCRIBE_SPOTS_RES, PT_SPOT_EVENT, PT_ERROR_RES),
+        )
+        pt = int(sub.get("payloadType") or 0)
+        if pt == PT_ERROR_RES:
+            raise CTraderError(f"subscribe spots failed: {sub.get('payload') or sub}")
+
+        # If subscribe response wasn't the spot, wait for spot event
+        spot_msg = sub if pt == PT_SPOT_EVENT else self._wait_payload(
+            wanted={PT_SPOT_EVENT, PT_ERROR_RES},
+            timeout_sec=min(10.0, self.timeout_sec),
+        )
+        if int(spot_msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(f"spot event error: {spot_msg.get('payload') or spot_msg}")
+        body = spot_msg.get("payload") or {}
+        bid = body.get("bid")
+        ask = body.get("ask")
+        # Some builds use bid/ask as ints with digits
+        if bid is None and body.get("bid") is None:
+            # try nested
+            bid = body.get("bidPrice") or body.get("b")
+        if ask is None:
+            ask = body.get("askPrice") or body.get("a")
+        try:
+            bid_f = float(bid)
+            ask_f = float(ask)
+        except (TypeError, ValueError) as e:
+            raise CTraderError(f"spot missing bid/ask: {body}") from e
+        # cTrader sometimes sends bid/ask in 1/100000 of price for some feeds —
+        # if values look like relative (huge ints for FX), leave as-is when already
+        # price-like. Gold ~2000, EUR ~1.1 — if bid > 1e6 scale down by 100000.
+        if bid_f > 1e6 and ask_f > 1e6:
+            bid_f /= 100_000.0
+            ask_f /= 100_000.0
+        try:
+            self._request(
+                PT_UNSUBSCRIBE_SPOTS_REQ,
+                {
+                    "ctidTraderAccountId": self.account_id,
+                    "symbolId": [int(symbol_id)],
+                },
+                expect_any=(PT_SUBSCRIBE_SPOTS_RES, PT_ERROR_RES, PT_SPOT_EVENT),
+            )
+        except CTraderError:
+            pass  # best-effort unsubscribe
+        return {"bid": bid_f, "ask": ask_f, "symbol_id": int(symbol_id)}
+
+    def list_open_positions_info(self) -> List[Dict[str, Any]]:
+        """Normalized open positions for BE / management."""
+        raw = self.list_open_positions()
+        # Reverse symbol map for names
+        id_to_name = {int(v): k for k, v in self._symbol_ids.items()}
+        out: List[Dict[str, Any]] = []
+        for p in raw:
+            trade = p.get("tradeData") if isinstance(p.get("tradeData"), dict) else {}
+            pid = p.get("positionId") or p.get("id")
+            try:
+                pid_i = int(pid)
+            except (TypeError, ValueError):
+                continue
+            side_raw = trade.get("tradeSide") or p.get("tradeSide") or p.get("side")
+            try:
+                side_i = int(side_raw) if side_raw is not None else 0
+            except (TypeError, ValueError):
+                side_i = 0
+            if side_i == TRADE_SIDE_SELL or str(side_raw).upper() in ("SELL", "2"):
+                side = "SELL"
+            else:
+                side = "BUY"
+            entry = p.get("price") or p.get("entryPrice") or trade.get("price")
+            sl = p.get("stopLoss") or p.get("stopLossPrice")
+            tp = p.get("takeProfit") or p.get("takeProfitPrice")
+            sid = p.get("symbolId") or trade.get("symbolId")
+            broker_symbol = None
+            try:
+                if sid is not None:
+                    broker_symbol = id_to_name.get(int(sid))
+            except (TypeError, ValueError):
+                broker_symbol = None
+            out.append(
+                {
+                    "position_id": pid_i,
+                    "side": side,
+                    "entry_price": float(entry) if entry is not None else None,
+                    "stop_loss": float(sl) if sl is not None else None,
+                    "take_profit": float(tp) if tp is not None else None,
+                    "symbol_id": int(sid) if sid is not None else None,
+                    "broker_symbol": broker_symbol,
+                    "volume": p.get("volume") or trade.get("volume"),
+                    "raw": p,
+                }
+            )
+        return out
+
     def close_all_positions(self) -> list:
         """
         Close every open position. Returns list of result dicts:
@@ -369,6 +511,34 @@ class CTraderClient:
             _symbol_map_account = self.account_id
         print(f"📡 cTrader symbols loaded: {len(mapping)} (cached)")
 
+    def _wait_payload(
+        self,
+        *,
+        wanted: set,
+        timeout_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        assert self._ws is not None
+        deadline = time.time() + float(timeout_sec if timeout_sec is not None else self.timeout_sec)
+        while time.time() < deadline:
+            try:
+                raw = self._ws.recv()
+            except WebSocketTimeoutException:
+                break
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            pt = int(msg.get("payloadType") or 0)
+            if pt == PT_HEARTBEAT:
+                continue
+            if pt in wanted or pt == PT_ERROR_RES:
+                return msg
+        raise CTraderError(f"timeout waiting for payload types {sorted(wanted)}")
+
     def _request(
         self,
         payload_type: int,
@@ -385,7 +555,6 @@ class CTraderClient:
         }
         assert self._ws is not None
         self._ws.send(json.dumps(envelope, separators=(",", ":")))
-        deadline = time.time() + self.timeout_sec
         wanted = set()
         if expect is not None:
             wanted.add(expect)
@@ -394,6 +563,7 @@ class CTraderClient:
         if not wanted:
             wanted.add(expect or payload_type)
 
+        deadline = time.time() + self.timeout_sec
         while time.time() < deadline:
             try:
                 raw = self._ws.recv()
@@ -411,11 +581,15 @@ class CTraderClient:
             # Heartbeats — ignore (server may send; no strict reply required for short sessions)
             if pt == PT_HEARTBEAT:
                 continue
+            # Spots may arrive without our clientMsgId
+            if pt == PT_SPOT_EVENT and PT_SPOT_EVENT in wanted:
+                return msg
             # Match our correlation id when present, or any expected payload type
             mid = msg.get("clientMsgId")
             if mid and mid != client_msg_id and pt not in (
                 PT_EXECUTION_EVENT,
                 PT_ORDER_ERROR_EVENT,
+                PT_SPOT_EVENT,
             ):
                 # Unrelated message
                 if pt == PT_ERROR_RES:

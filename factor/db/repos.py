@@ -155,7 +155,13 @@ def delete_connection(user_id: str) -> None:
 def list_prefs(user_id: str) -> List[Dict[str, Any]]:
     sb = get_supabase()
     res = sb.table(T_PREFS).select("*").eq("user_id", user_id).execute()
-    return list(res.data or [])
+    rows = []
+    for r in res.data or []:
+        row = dict(r)
+        if "breakeven_half_tp" not in row:
+            row["breakeven_half_tp"] = True
+        rows.append(row)
+    return rows
 
 
 def upsert_pref(
@@ -169,6 +175,7 @@ def upsert_pref(
     volume_lots: float = 0.01,
     sl_points: int = 1000,
     tp_points: int = 1000,
+    breakeven_half_tp: bool = True,
 ) -> Dict[str, Any]:
     """
     One row per (user_id, kind, symbol). Update if exists; otherwise insert.
@@ -177,7 +184,7 @@ def upsert_pref(
     sb = get_supabase()
     kind = str(kind).strip()
     symbol = str(symbol).strip()
-    payload = {
+    base = {
         "user_id": user_id,
         "kind": kind,
         "symbol": symbol,
@@ -188,6 +195,11 @@ def upsert_pref(
         "sl_points": int(sl_points),
         "tp_points": int(tp_points),
     }
+    # Prefer with BE column (sql/002); fall back if column not migrated yet
+    payloads = [
+        {**base, "breakeven_half_tp": bool(breakeven_half_tp)},
+        base,
+    ]
     existing = (
         sb.table(T_PREFS)
         .select("id")
@@ -197,16 +209,32 @@ def upsert_pref(
         .limit(1)
         .execute()
     )
-    if existing.data:
-        pref_id = existing.data[0]["id"]
-        res = sb.table(T_PREFS).update(payload).eq("id", pref_id).execute()
-        if not res.data:
-            raise RuntimeError("update pref failed")
-        return res.data[0]
-    res = sb.table(T_PREFS).insert(payload).execute()
-    if not res.data:
-        raise RuntimeError("insert pref failed")
-    return res.data[0]
+    last_err: Optional[Exception] = None
+    for payload in payloads:
+        try:
+            if existing.data:
+                pref_id = existing.data[0]["id"]
+                res = sb.table(T_PREFS).update(payload).eq("id", pref_id).execute()
+                if not res.data:
+                    raise RuntimeError("update pref failed")
+                # echo BE into response if column missing so UI still shows choice
+                row = res.data[0]
+                if "breakeven_half_tp" not in row:
+                    row = dict(row)
+                    row["breakeven_half_tp"] = bool(breakeven_half_tp)
+                return row
+            res = sb.table(T_PREFS).insert(payload).execute()
+            if not res.data:
+                raise RuntimeError("insert pref failed")
+            row = res.data[0]
+            if "breakeven_half_tp" not in row:
+                row = dict(row)
+                row["breakeven_half_tp"] = bool(breakeven_half_tp)
+            return row
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"upsert pref failed: {last_err}")
 
 
 def replace_prefs_for_user(
@@ -242,6 +270,8 @@ def replace_prefs_for_user(
         if key in seen:
             continue
         seen.add(key)
+        # Default BE on when key omitted
+        be_raw = raw.get("breakeven_half_tp", True)
         row = upsert_pref(
             user_id=user_id,
             kind=kind,
@@ -252,6 +282,7 @@ def replace_prefs_for_user(
             volume_lots=float(raw.get("volume_lots") or 0.01),
             sl_points=int(raw.get("sl_points") or 1000),
             tp_points=int(raw.get("tp_points") or 1000),
+            breakeven_half_tp=bool(be_raw),
         )
         saved.append(row)
     return saved
@@ -424,6 +455,32 @@ def mark_open_orders_closed(
         .execute()
     )
     return len(res.data or [])
+
+
+def list_open_orders_all(*, limit: int = 100) -> List[Dict[str, Any]]:
+    """Open orders across all users (breakeven poll). Newest first."""
+    sb = get_supabase()
+    limit = max(1, min(int(limit), 500))
+    res = (
+        sb.table(T_ORDERS)
+        .select("*")
+        .eq("status", "open")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return list(res.data or [])
+
+
+def update_order(order_id: str, **fields: Any) -> Dict[str, Any]:
+    """Patch fields on a factor_orders row. Returns updated row."""
+    if not fields:
+        raise ValueError("update_order requires fields")
+    sb = get_supabase()
+    res = sb.table(T_ORDERS).update(fields).eq("id", order_id).execute()
+    if not res.data:
+        raise RuntimeError(f"update_order failed for {order_id}")
+    return res.data[0]
 
 
 # ---------------------------------------------------------------------------

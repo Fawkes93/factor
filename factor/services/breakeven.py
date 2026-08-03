@@ -1,0 +1,571 @@
+"""
+Move stop-loss to breakeven when price reaches a fraction of the TP distance.
+
+Example: entry 2000, TP +1000 pts, fraction 0.5 → at +500 pts favorable,
+set SL to entry (+ optional buffer points).
+
+Multi-user: background poll over open factor_orders + cTrader amend SLTP.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from factor import config
+from factor.broker.ctrader import broker_from_connection
+from factor.crypto.tokens import decrypt_token
+from factor.db import repos
+from factor.db.client import supabase_configured
+from factor.rules.presets import resolve_preset
+
+_be_stop = threading.Event()
+_be_thread: Optional[threading.Thread] = None
+_last_be: Dict[str, Any] = {"at": None, "checked": 0, "moved": 0, "error": None}
+
+
+def last_breakeven_status() -> Dict[str, Any]:
+    return dict(_last_be)
+
+
+# ---------------------------------------------------------------------------
+# Pure logic (unit-tested)
+# ---------------------------------------------------------------------------
+
+
+def favorable_distance(*, side: str, entry: float, mark: float) -> float:
+    """How far price has moved in the trade's favor (price units, not points)."""
+    side_u = (side or "").upper()
+    if side_u in ("BUY", "UP", "LONG"):
+        return float(mark) - float(entry)
+    if side_u in ("SELL", "DOWN", "SHORT"):
+        return float(entry) - float(mark)
+    return 0.0
+
+
+def tp_distance_price(
+    *,
+    side: str,
+    entry: float,
+    tp_price: Optional[float] = None,
+    tp_points: Optional[float] = None,
+    point_size: Optional[float] = None,
+) -> float:
+    """Absolute price distance from entry to TP."""
+    if tp_price is not None and float(tp_price) > 0:
+        return abs(float(tp_price) - float(entry))
+    pts = float(tp_points or 0)
+    psz = float(point_size or 0)
+    if pts > 0 and psz > 0:
+        return pts * psz
+    return 0.0
+
+
+def breakeven_sl_price(
+    *,
+    side: str,
+    entry: float,
+    buffer_points: float = 0.0,
+    point_size: float = 0.01,
+) -> float:
+    """
+    SL at entry, nudged slightly into profit by buffer_points so spread
+    is less likely to stop you out at pure $0.
+    """
+    side_u = (side or "").upper()
+    buf = max(0.0, float(buffer_points)) * max(0.0, float(point_size))
+    entry_f = float(entry)
+    if side_u in ("BUY", "UP", "LONG"):
+        return entry_f + buf
+    if side_u in ("SELL", "DOWN", "SHORT"):
+        return entry_f - buf
+    return entry_f
+
+
+def sl_is_worse_than_be(*, side: str, current_sl: Optional[float], be_sl: float) -> bool:
+    """True if current SL is missing or still worse than the proposed BE SL."""
+    if current_sl is None:
+        return True
+    side_u = (side or "").upper()
+    cur = float(current_sl)
+    be = float(be_sl)
+    # Tiny float tolerance
+    eps = 1e-9
+    if side_u in ("BUY", "UP", "LONG"):
+        return cur < be - eps
+    if side_u in ("SELL", "DOWN", "SHORT"):
+        return cur > be + eps
+    return True
+
+
+def should_move_to_breakeven(
+    *,
+    side: str,
+    entry: float,
+    mark: float,
+    tp_price: Optional[float] = None,
+    tp_points: Optional[float] = None,
+    point_size: Optional[float] = None,
+    fraction: float = 0.5,
+    already_applied: bool = False,
+    current_sl: Optional[float] = None,
+    buffer_points: float = 0.0,
+) -> Tuple[bool, Optional[float], str]:
+    """
+    Returns (should_move, new_sl_price, reason).
+    """
+    if already_applied:
+        return False, None, "already_applied"
+    if entry is None or mark is None:
+        return False, None, "missing_prices"
+    try:
+        entry_f = float(entry)
+        mark_f = float(mark)
+    except (TypeError, ValueError):
+        return False, None, "bad_prices"
+
+    frac = float(fraction)
+    if frac <= 0 or frac > 1.0:
+        return False, None, f"bad_fraction:{frac}"
+
+    psz = float(point_size or 0.01)
+    tp_dist = tp_distance_price(
+        side=side,
+        entry=entry_f,
+        tp_price=tp_price,
+        tp_points=tp_points,
+        point_size=psz,
+    )
+    if tp_dist <= 0:
+        return False, None, "no_tp_distance"
+
+    fav = favorable_distance(side=side, entry=entry_f, mark=mark_f)
+    trigger = tp_dist * frac
+    if fav + 1e-12 < trigger:
+        return False, None, f"not_yet fav={fav:.5f} need={trigger:.5f}"
+
+    be_sl = breakeven_sl_price(
+        side=side, entry=entry_f, buffer_points=buffer_points, point_size=psz
+    )
+    if not sl_is_worse_than_be(side=side, current_sl=current_sl, be_sl=be_sl):
+        return False, None, "sl_already_at_or_better_than_be"
+
+    return True, be_sl, f"trigger fav={fav:.5f} >= {trigger:.5f}"
+
+
+def mark_price_for_side(*, side: str, bid: float, ask: float) -> float:
+    """Conservative exit-side mark: BUY uses bid, SELL uses ask."""
+    side_u = (side or "").upper()
+    if side_u in ("BUY", "UP", "LONG"):
+        return float(bid)
+    if side_u in ("SELL", "DOWN", "SHORT"):
+        return float(ask)
+    return (float(bid) + float(ask)) / 2.0
+
+
+# ---------------------------------------------------------------------------
+# Order helpers
+# ---------------------------------------------------------------------------
+
+
+def _order_be_meta(order: Dict[str, Any]) -> Dict[str, Any]:
+    detail = order.get("detail") if isinstance(order.get("detail"), dict) else {}
+    be = detail.get("breakeven") if isinstance(detail.get("breakeven"), dict) else {}
+    plan = {}
+    broker_detail = detail.get("broker_detail") if isinstance(detail.get("broker_detail"), dict) else {}
+    if isinstance(broker_detail.get("plan"), dict):
+        plan = broker_detail["plan"]
+    return {
+        "enabled": bool(be.get("enabled", True)),
+        "applied": bool(be.get("applied", False)),
+        "fraction": float(be.get("fraction") or getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
+        "buffer_points": float(
+            be.get("buffer_points")
+            if be.get("buffer_points") is not None
+            else getattr(config, "BREAKEVEN_BUFFER_POINTS", 0) or 0
+        ),
+        "tp_points": be.get("tp_points") or plan.get("tp_points"),
+        "sl_points": be.get("sl_points") or plan.get("sl_points"),
+        "point_size": be.get("point_size") or plan.get("point_size"),
+        "plan": plan,
+    }
+
+
+def _resolve_point_size(order: Dict[str, Any], meta: Dict[str, Any]) -> float:
+    if meta.get("point_size"):
+        try:
+            return float(meta["point_size"])
+        except (TypeError, ValueError):
+            pass
+    try:
+        preset = resolve_preset(str(order.get("symbol") or ""), str(order.get("kind") or "candle"))
+        return float(preset.get("point_size") or 0.01)
+    except Exception:
+        return 0.01
+
+
+def _extract_position_id(order: Dict[str, Any], positions: List[Dict[str, Any]]) -> Optional[int]:
+    pid = order.get("broker_position_id")
+    if pid is not None and str(pid).strip() and not str(pid).startswith("dry-"):
+        try:
+            return int(pid)
+        except (TypeError, ValueError):
+            pass
+    detail = order.get("detail") if isinstance(order.get("detail"), dict) else {}
+    be = detail.get("breakeven") if isinstance(detail.get("breakeven"), dict) else {}
+    if be.get("position_id") is not None:
+        try:
+            return int(be["position_id"])
+        except (TypeError, ValueError):
+            pass
+    # Match by side among open positions (best effort when only one open)
+    side = str(order.get("side") or "").upper()
+    want_buy = side in ("BUY", "UP", "LONG")
+    candidates = []
+    for p in positions:
+        pside = str(p.get("side") or "").upper()
+        is_buy = pside in ("BUY", "1", "LONG")
+        if want_buy == is_buy or not pside:
+            candidates.append(p)
+    if len(candidates) == 1:
+        try:
+            return int(candidates[0]["position_id"])
+        except (TypeError, ValueError, KeyError):
+            return None
+    if len(positions) == 1:
+        try:
+            return int(positions[0]["position_id"])
+        except (TypeError, ValueError, KeyError):
+            return None
+    return None
+
+
+def build_breakeven_order_detail(
+    *,
+    plan: Any,
+    pref: Optional[Dict[str, Any]] = None,
+    enabled: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Snapshot BE settings into order.detail at place time."""
+    pref = pref or {}
+    if enabled is None:
+        enabled = bool(getattr(config, "BREAKEVEN_ENABLED", True)) and bool(
+            pref.get("breakeven_half_tp", True)
+        )
+    return {
+        "enabled": bool(enabled),
+        "applied": False,
+        "fraction": float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
+        "buffer_points": float(getattr(config, "BREAKEVEN_BUFFER_POINTS", 0) or 0),
+        "tp_points": getattr(plan, "tp_points", None),
+        "sl_points": getattr(plan, "sl_points", None),
+        "point_size": getattr(plan, "point_size", None),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Runtime cycle
+# ---------------------------------------------------------------------------
+
+
+def process_open_order_for_be(
+    order: Dict[str, Any],
+    *,
+    broker: Any,
+    positions: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Check one open order; amend SL if BE trigger hit.
+    broker must implement list_open_positions_info / get_spot_for_symbol / amend_position_sl_tp
+    """
+    order_id = order.get("id")
+    meta = _order_be_meta(order)
+    if not meta["enabled"]:
+        return {"order_id": order_id, "action": "skip", "reason": "be_disabled"}
+    if meta["applied"]:
+        return {"order_id": order_id, "action": "skip", "reason": "already_applied"}
+
+    if positions is None:
+        try:
+            positions = broker.list_open_positions_info()
+        except Exception as e:
+            return {"order_id": order_id, "action": "skip", "reason": f"list_pos_failed:{e}"}
+
+    dry = bool(getattr(broker, "_dry_run", False))
+    if not positions:
+        # In dry-run there are never live positions — don't wipe local open rows
+        if dry:
+            return {"order_id": order_id, "action": "skip", "reason": "dry_run_no_positions"}
+        # Position gone — mark closed locally
+        try:
+            repos.update_order(
+                str(order_id),
+                status="closed",
+                closed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                skip_reason=order.get("skip_reason") or "position_gone",
+            )
+        except Exception as e:
+            print(f"⚠️  BE mark closed failed order={order_id}: {e}")
+        return {"order_id": order_id, "action": "closed_local", "reason": "no_open_positions"}
+
+    pos_id = _extract_position_id(order, positions)
+    pos = None
+    if pos_id is not None:
+        for p in positions:
+            try:
+                if int(p.get("position_id")) == int(pos_id):
+                    pos = p
+                    break
+            except (TypeError, ValueError):
+                continue
+    if pos is None and len(positions) == 1:
+        pos = positions[0]
+        pos_id = int(pos["position_id"])
+
+    if pos is None:
+        return {"order_id": order_id, "action": "skip", "reason": "position_not_matched"}
+
+    side = str(order.get("side") or pos.get("side") or "BUY")
+    entry = order.get("entry_price")
+    if entry is None:
+        entry = pos.get("entry_price")
+    try:
+        entry_f = float(entry)
+    except (TypeError, ValueError):
+        return {"order_id": order_id, "action": "skip", "reason": "no_entry"}
+
+    # Spot for mark
+    broker_symbol = pos.get("broker_symbol")
+    if not broker_symbol:
+        # fall back to plan / symbol without slash
+        plan = meta.get("plan") or {}
+        broker_symbol = plan.get("broker_symbol") or str(order.get("symbol") or "").replace("/", "")
+
+    try:
+        spot = broker.get_spot(str(broker_symbol))
+        mark = mark_price_for_side(
+            side=side, bid=float(spot["bid"]), ask=float(spot["ask"])
+        )
+    except Exception as e:
+        return {"order_id": order_id, "action": "skip", "reason": f"spot_failed:{e}"}
+
+    psz = _resolve_point_size(order, meta)
+    current_sl = pos.get("stop_loss")
+    if current_sl is None:
+        try:
+            current_sl = float(order["sl_price"]) if order.get("sl_price") is not None else None
+        except (TypeError, ValueError):
+            current_sl = None
+
+    tp_price = order.get("tp_price")
+    if tp_price is None:
+        tp_price = pos.get("take_profit")
+
+    ok, be_sl, reason = should_move_to_breakeven(
+        side=side,
+        entry=entry_f,
+        mark=mark,
+        tp_price=float(tp_price) if tp_price is not None else None,
+        tp_points=float(meta["tp_points"]) if meta.get("tp_points") is not None else None,
+        point_size=psz,
+        fraction=meta["fraction"],
+        already_applied=False,
+        current_sl=float(current_sl) if current_sl is not None else None,
+        buffer_points=meta["buffer_points"],
+    )
+    if not ok or be_sl is None:
+        return {"order_id": order_id, "action": "skip", "reason": reason, "mark": mark}
+
+    # Keep existing TP when amending
+    tp_keep = None
+    if tp_price is not None:
+        try:
+            tp_keep = float(tp_price)
+        except (TypeError, ValueError):
+            tp_keep = None
+    if tp_keep is None and pos.get("take_profit") is not None:
+        try:
+            tp_keep = float(pos["take_profit"])
+        except (TypeError, ValueError):
+            tp_keep = None
+
+    try:
+        amend = broker.amend_position_sl_tp(
+            position_id=int(pos_id),
+            stop_loss=float(be_sl),
+            take_profit=tp_keep,
+        )
+    except Exception as e:
+        print(f"❌ BE amend failed order={order_id} pos={pos_id}: {e}")
+        return {"order_id": order_id, "action": "error", "reason": str(e)}
+
+    # Persist
+    detail = dict(order.get("detail") or {})
+    be = dict(detail.get("breakeven") or {})
+    be.update(
+        {
+            "enabled": True,
+            "applied": True,
+            "applied_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "be_sl": float(be_sl),
+            "mark_at_apply": mark,
+            "position_id": int(pos_id),
+            "reason": reason,
+            "fraction": meta["fraction"],
+            "buffer_points": meta["buffer_points"],
+            "tp_points": meta.get("tp_points"),
+            "point_size": psz,
+        }
+    )
+    detail["breakeven"] = be
+    try:
+        repos.update_order(
+            str(order_id),
+            sl_price=float(be_sl),
+            broker_position_id=str(pos_id),
+            detail=detail,
+        )
+    except Exception as e:
+        print(f"⚠️  BE update_order failed order={order_id}: {e}")
+
+    print(
+        f"🛡️  BE applied order={str(order_id)[:8]} pos={pos_id} "
+        f"{side} {order.get('symbol')} SL→{be_sl} mark={mark} ({reason})"
+    )
+    return {
+        "order_id": order_id,
+        "action": "moved",
+        "be_sl": be_sl,
+        "mark": mark,
+        "position_id": pos_id,
+        "reason": reason,
+        "amend": amend,
+    }
+
+
+def run_breakeven_cycle() -> Dict[str, Any]:
+    """One pass over all open multi-user orders that may need BE."""
+    out: Dict[str, Any] = {"checked": 0, "moved": 0, "errors": 0, "results": []}
+    if not getattr(config, "BREAKEVEN_ENABLED", True):
+        out["reason"] = "breakeven_disabled"
+        return out
+    if not config.MULTI_USER or not supabase_configured():
+        out["reason"] = "multi_user_or_supabase_off"
+        return out
+    if not config.FACTOR_TOKEN_ENC_KEY:
+        out["reason"] = "token_enc_key_missing"
+        return out
+
+    try:
+        open_orders = repos.list_open_orders_all(limit=100)
+    except Exception as e:
+        out["error"] = str(e)
+        print(f"⚠️  BE list_open_orders_all failed: {e}")
+        return out
+
+    # Group by user_id
+    by_user: Dict[str, List[Dict[str, Any]]] = {}
+    for o in open_orders:
+        uid = str(o.get("user_id") or "")
+        if not uid:
+            continue
+        # Skip if already applied
+        meta = _order_be_meta(o)
+        if meta["applied"] or not meta["enabled"]:
+            continue
+        by_user.setdefault(uid, []).append(o)
+
+    for uid, orders in by_user.items():
+        conn = None
+        try:
+            conn = repos.get_connection(uid)
+        except Exception as e:
+            print(f"⚠️  BE get_connection {uid[:8]}: {e}")
+            continue
+        if not conn:
+            continue
+        try:
+            access = decrypt_token(
+                conn["access_token_enc"], config.FACTOR_TOKEN_ENC_KEY
+            )
+            broker = broker_from_connection(
+                access_token=access,
+                account_id=int(conn["account_id"]),
+                host=str(conn.get("host") or "demo.ctraderapi.com"),
+                dry_run=config.CTRADER_DRY_RUN,
+            )
+        except Exception as e:
+            print(f"⚠️  BE broker build {uid[:8]}: {e}")
+            out["errors"] += 1
+            continue
+
+        try:
+            positions = broker.list_open_positions_info()
+        except Exception as e:
+            print(f"⚠️  BE list positions {uid[:8]}: {e}")
+            out["errors"] += 1
+            continue
+
+        for order in orders:
+            out["checked"] += 1
+            try:
+                r = process_open_order_for_be(
+                    order, broker=broker, positions=positions
+                )
+                out["results"].append(r)
+                if r.get("action") == "moved":
+                    out["moved"] += 1
+                elif r.get("action") == "error":
+                    out["errors"] += 1
+            except Exception as e:
+                out["errors"] += 1
+                print(f"⚠️  BE process order failed: {e}")
+
+    return out
+
+
+def _be_loop() -> None:
+    interval = max(5.0, float(getattr(config, "BREAKEVEN_POLL_SEC", 15) or 15))
+    print(f"🛡️  Breakeven poll every {interval:g}s (fraction={getattr(config, 'BREAKEVEN_FRACTION', 0.5)})")
+    while not _be_stop.wait(interval):
+        try:
+            stats = run_breakeven_cycle()
+            _last_be.update(
+                {
+                    "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "checked": stats.get("checked", 0),
+                    "moved": stats.get("moved", 0),
+                    "error": stats.get("error") or (
+                        f"{stats.get('errors')} errors" if stats.get("errors") else None
+                    ),
+                    "reason": stats.get("reason"),
+                }
+            )
+            if stats.get("moved"):
+                print(f"🛡️  BE cycle moved={stats['moved']} checked={stats['checked']}")
+        except Exception as e:
+            _last_be["error"] = str(e)
+            print(f"⚠️  BE cycle error: {e}")
+
+
+def start_breakeven_loop() -> None:
+    global _be_thread
+    if not getattr(config, "BREAKEVEN_ENABLED", True):
+        print("ℹ️  BREAKEVEN_ENABLED=false — no BE poll")
+        return
+    if not config.MULTI_USER:
+        print("ℹ️  Breakeven poll only runs in MULTI_USER mode")
+        return
+    if _be_thread and _be_thread.is_alive():
+        return
+    _be_stop.clear()
+    _be_thread = threading.Thread(
+        target=_be_loop, name="breakeven-poll", daemon=True
+    )
+    _be_thread.start()
+
+
+def stop_breakeven_loop() -> None:
+    _be_stop.set()

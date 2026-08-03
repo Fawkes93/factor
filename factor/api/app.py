@@ -19,6 +19,11 @@ from factor import __version__, config
 from factor.auth.routes import router as auth_router
 from factor.broker.factory import get_broker
 from factor.catchup import last_poll_status, run_catchup, start_poll_loop, stop_poll_loop
+from factor.services.breakeven import (
+    last_breakeven_status,
+    start_breakeven_loop,
+    stop_breakeven_loop,
+)
 from factor.db.client import supabase_configured
 from factor.engine import process_alert
 from factor.engine_multi import process_alert_multi
@@ -102,6 +107,10 @@ def create_app(
                 "ℹ️  MULTI_USER=true — boot catch-up trading disabled "
                 "(webhooks fan-out only; freshness still enforced)"
             )
+            try:
+                start_breakeven_loop()
+            except Exception as e:
+                print(f"⚠️  Breakeven loop start failed: {e}")
         elif not skip_catchup:
             try:
                 run_catchup(state_store, broker)
@@ -114,6 +123,7 @@ def create_app(
         yield
         mem_stop.set()
         stop_poll_loop()
+        stop_breakeven_loop()
 
     # Serve /api/health and /api/health/ the same — no 307 redirect spam from Render probes
     app = FastAPI(
@@ -179,6 +189,9 @@ def create_app(
             "trading_enabled": config.TRADING_ENABLED,
             "trade_kinds": config.TRADE_KINDS,
             "trade_symbols": config.TRADE_SYMBOLS,
+            "breakeven_enabled": bool(getattr(config, "BREAKEVEN_ENABLED", True)),
+            "breakeven_fraction": float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
+            "breakeven": last_breakeven_status(),
             "max_open_total": int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1),
             "max_alert_age_sec": float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5),
             "xau_preset": (config.PRESETS.get("XAU/USD") or {}),

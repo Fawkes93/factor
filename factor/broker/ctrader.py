@@ -241,6 +241,9 @@ class CTraderBroker:
 
         detail["execution"] = exec_body
         order_id = _extract_order_id(exec_body) or client_order_id
+        position_id = _extract_position_id(exec_body)
+        if position_id:
+            detail["position_id"] = position_id
         print(f"✅ cTrader order ok id={order_id} alert_id={plan.alert_id}")
         return OrderResult(
             ok=True,
@@ -249,6 +252,74 @@ class CTraderBroker:
             message="order accepted",
             detail=detail,
         )
+
+    def list_open_positions_info(self) -> list:
+        """Normalized open positions (entry, SL, TP, side, symbol)."""
+        if not self.configured():
+            return []
+        if self._dry_run:
+            return []
+        with self._lock:
+            with CTraderClient(
+                host=self._host,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                access_token=self._access_token,
+                account_id=int(self._account_id),
+            ) as client:
+                return client.list_open_positions_info()
+
+    def get_spot(self, broker_symbol: str) -> Dict[str, float]:
+        if not self.configured():
+            raise CTraderError("cTrader not configured")
+        if self._dry_run:
+            # No live feed — caller should skip BE in dry_run
+            raise CTraderError("dry_run has no spots")
+        with self._lock:
+            with CTraderClient(
+                host=self._host,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                access_token=self._access_token,
+                account_id=int(self._account_id),
+            ) as client:
+                return client.get_spot(broker_symbol)
+
+    def amend_position_sl_tp(
+        self,
+        *,
+        position_id: int,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if not self.configured():
+            raise CTraderError("cTrader not configured")
+        if self._dry_run:
+            print(
+                f"🛡️  dry_run amend SL/TP pos={position_id} "
+                f"sl={stop_loss} tp={take_profit}"
+            )
+            return {
+                "dry_run": True,
+                "position_id": position_id,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            }
+        with self._lock:
+            with CTraderClient(
+                host=self._host,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                access_token=self._access_token,
+                account_id=int(self._account_id),
+            ) as client:
+                body = client.amend_position_sl_tp(
+                    position_id=position_id,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+            self._open_cache_at = 0.0
+            return body
 
 
 def broker_from_connection(
@@ -279,4 +350,18 @@ def _extract_order_id(execution: Dict[str, Any]) -> Optional[str]:
             return str(pos[key])
         if execution.get(key) is not None:
             return str(execution[key])
+    return None
+
+
+def _extract_position_id(execution: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(execution, dict):
+        return None
+    pos = execution.get("position") or {}
+    deal = execution.get("deal") or {}
+    for src in (pos, deal, execution):
+        if not isinstance(src, dict):
+            continue
+        for key in ("positionId", "position_id"):
+            if src.get(key) is not None:
+                return str(src[key])
     return None
