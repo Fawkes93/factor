@@ -157,12 +157,21 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "lot_units": 100,
     },
     "EUR/USD": {
+        # UI label "USD" — main dollar pair (Reaktor symbol EUR/USD)
         "volume_lots": 0.01,
         "sl_points": 150,
         "tp_points": 300,
         "point_size": 0.00001,
         "broker_symbol": "EURUSD",
         "lot_units": 100_000,
+    },
+    "BTC/USD": {
+        "volume_lots": 0.01,
+        "sl_points": 500,
+        "tp_points": 500,
+        "point_size": 1.0,
+        "broker_symbol": "BTCUSD",
+        "lot_units": 1,
     },
     "USD/JPY": {
         "volume_lots": 0.01,

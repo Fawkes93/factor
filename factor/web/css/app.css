@@ -295,7 +295,7 @@ table.data td.mono { font-family: var(--mono); font-size: 0.82rem; }
   min-width: 0;
 }
 .kind-select,
-.symbol-input {
+.symbol-select {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -303,12 +303,13 @@ table.data td.mono { font-family: var(--mono); font-size: 0.82rem; }
   padding: 8px 10px;
   font: inherit;
   font-size: 0.9rem;
+  cursor: pointer;
 }
 .kind-select { min-width: 150px; }
-.symbol-input {
+.symbol-select {
   font-family: var(--mono);
-  min-width: 110px;
-  flex: 1;
+  min-width: 100px;
+  font-weight: 600;
 }
 
 /* Toggle switch */

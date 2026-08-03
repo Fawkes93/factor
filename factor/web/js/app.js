@@ -155,6 +155,17 @@ const ALERT_KINDS = [
   { id: "spike", label: "Spike" },
 ];
 
+/**
+ * Symbols offered in the Alerts UI.
+ * `id` is stored and must match Reaktor alert.symbol (pair form).
+ * Labels are the short names (XAU / USD / BTC).
+ */
+const ALERT_SYMBOLS = [
+  { id: "XAU/USD", label: "XAU" },
+  { id: "EUR/USD", label: "USD" },
+  { id: "BTC/USD", label: "BTC" },
+];
+
 /** Working copy of prefs in the form (field edits before Save; toggle/delete persist immediately). */
 let prefsDraft = [];
 let prefsSaving = false;
@@ -162,7 +173,7 @@ let prefsSaving = false;
 function newPref(kind = "candle") {
   return {
     kind,
-    symbol: "XAU/USD",
+    symbol: ALERT_SYMBOLS[0].id,
     enabled: true,
     max_concurrent: 1,
     max_per_day: 5,
@@ -181,21 +192,53 @@ function kindSelect(selected) {
   ).join("");
 }
 
+function symbolSelect(selected) {
+  const known = new Set(ALERT_SYMBOLS.map((s) => s.id));
+  const opts = ALERT_SYMBOLS.map(
+    (s) =>
+      `<option value="${escapeHtml(s.id)}" ${
+        s.id === selected ? "selected" : ""
+      }>${escapeHtml(s.label)}</option>`
+  );
+  // Keep a legacy/unknown value visible so save does not silently change it
+  if (selected && !known.has(selected)) {
+    opts.unshift(
+      `<option value="${escapeHtml(selected)}" selected>${escapeHtml(
+        selected
+      )} (current)</option>`
+    );
+  }
+  return opts.join("");
+}
+
 function setPrefsMsg(text, kind = "") {
   const msg = $("#prefs-msg");
   msg.textContent = text || "";
   msg.className = kind ? `hint ${kind}` : "hint";
 }
 
+function symbolLabel(id) {
+  return ALERT_SYMBOLS.find((s) => s.id === id)?.label || id;
+}
+
 function validatePrefs(prefs) {
+  const allowed = new Set(ALERT_SYMBOLS.map((s) => s.id));
+  // Also allow symbols already in the draft (legacy rows) so save doesn't brick them
+  for (const p of prefsDraft) {
+    if (p?.symbol) allowed.add(p.symbol);
+  }
   const keys = new Set();
   for (const p of prefs) {
     if (!p.kind || !p.symbol) {
       return `Each alert needs a type and symbol.`;
     }
+    if (!allowed.has(p.symbol)) {
+      const labels = ALERT_SYMBOLS.map((s) => s.label).join(", ");
+      return `Unknown symbol “${p.symbol}”. Choose ${labels}.`;
+    }
     const k = `${p.kind}|${p.symbol}`;
     if (keys.has(k)) {
-      return `Duplicate alert: ${p.kind} / ${p.symbol}`;
+      return `Duplicate alert: ${p.kind} / ${symbolLabel(p.symbol)}`;
     }
     keys.add(k);
   }
@@ -270,10 +313,12 @@ function renderPrefs() {
             <span class="toggle-label">${on ? "On" : "Off"}</span>
           </label>
           <div class="pref-card-title">
-            <select name="kind" class="kind-select">${kindSelect(p.kind)}</select>
-            <input type="text" name="symbol" class="symbol-input" value="${escapeHtml(
+            <select name="kind" class="kind-select" aria-label="Alert type">${kindSelect(
+              p.kind
+            )}</select>
+            <select name="symbol" class="symbol-select" aria-label="Symbol">${symbolSelect(
               p.symbol
-            )}" />
+            )}</select>
           </div>
           <button type="button" class="btn-icon danger-icon btn-delete-pref" title="Delete alert permanently" aria-label="Delete" ${
             prefsSaving ? "disabled" : ""
@@ -351,7 +396,7 @@ function renderPrefs() {
     card.querySelector(".btn-delete-pref").addEventListener("click", async () => {
       if (prefsSaving) return;
       collectPrefsFromDom();
-      const label = `${prefsDraft[i].kind} / ${prefsDraft[i].symbol}`;
+      const label = `${prefsDraft[i].kind} / ${symbolLabel(prefsDraft[i].symbol)}`;
       if (
         !confirm(
           `Delete alert “${label}” permanently?\n\nThis removes it from the database. Use the On/Off toggle if you only want to pause.`
