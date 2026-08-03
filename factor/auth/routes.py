@@ -115,8 +115,8 @@ def ctrader_callback(
         raw_meta={"accounts": accounts, "selected": account, "host": host},
     )
 
-    # No default disabled rows — UI shows candle+spike templates; only enabled
-    # prefs are stored when the user saves Alerts.
+    # Prefs are created from the Alerts UI (add / toggle / delete).
+    # Disabled prefs stay in DB so users can pause without losing settings.
 
     resp = RedirectResponse("/", status_code=302)
     set_session_cookie(resp, user_id)

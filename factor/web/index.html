@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Factor</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="/static/css/app.css?v=2" />
 </head>
 <body>
   <div id="app">
@@ -70,16 +70,18 @@
           <div class="card">
             <div class="card-head">
               <h2>Alert settings</h2>
-              <button type="button" id="btn-save-prefs" class="btn primary small">Save</button>
+              <button type="button" id="btn-save-prefs" class="btn primary small">Save settings</button>
             </div>
             <p class="muted small">
-              Add alerts you may want to trade.
               <strong>Range (candle)</strong> = range expansion ·
               <strong>Spike</strong> = short-window spike.
-              Use the toggle to pause without losing settings; trash to remove entirely.
+              <br />
+              <strong>Toggle</strong> pauses trading but keeps lots / SL / TP / caps.
+              <strong>Bin</strong> deletes the alert for good.
+              Use <strong>Save settings</strong> after changing fields (toggle &amp; delete save right away).
             </p>
             <div id="prefs-list" class="prefs-list"></div>
-            <div class="prefs-add-wrap">
+            <div id="prefs-add-wrap" class="prefs-add-wrap">
               <button type="button" id="btn-add-pref" class="btn ghost">+ Add alert</button>
             </div>
             <p id="prefs-msg" class="hint"></p>
@@ -114,6 +116,6 @@
 
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=2"></script>
 </body>
 </html>

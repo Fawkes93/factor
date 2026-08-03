@@ -104,12 +104,14 @@ function renderStatus() {
   const u = state.me?.user || {};
   const kv = $("#status-kv");
   const killed = !!u.kill_switch;
+  const enabledCount = (state.me?.prefs || []).filter((p) => p.enabled).length;
+  const totalCount = (state.me?.prefs || []).length;
   kv.innerHTML = `
     <dt>Trading</dt><dd>${u.trading_enabled ? "enabled" : "disabled"}</dd>
     <dt>Kill switch</dt><dd style="color:${killed ? "var(--danger)" : "var(--ok)"}">${
       killed ? "ON" : "off"
     }</dd>
-    <dt>Prefs</dt><dd>${(state.me?.prefs || []).filter((p) => p.enabled).length} enabled</dd>
+    <dt>Prefs</dt><dd>${enabledCount} on · ${totalCount} saved</dd>
   `;
   $("#kill-banner").classList.toggle("hidden", !killed);
 }
@@ -153,8 +155,9 @@ const ALERT_KINDS = [
   { id: "spike", label: "Spike" },
 ];
 
-/** Working copy of prefs in the form (add/toggle/delete before Save). */
+/** Working copy of prefs in the form (field edits before Save; toggle/delete persist immediately). */
 let prefsDraft = [];
+let prefsSaving = false;
 
 function newPref(kind = "candle") {
   return {
@@ -178,24 +181,91 @@ function kindSelect(selected) {
   ).join("");
 }
 
+function setPrefsMsg(text, kind = "") {
+  const msg = $("#prefs-msg");
+  msg.textContent = text || "";
+  msg.className = kind ? `hint ${kind}` : "hint";
+}
+
+function validatePrefs(prefs) {
+  const keys = new Set();
+  for (const p of prefs) {
+    if (!p.kind || !p.symbol) {
+      return `Each alert needs a type and symbol.`;
+    }
+    const k = `${p.kind}|${p.symbol}`;
+    if (keys.has(k)) {
+      return `Duplicate alert: ${p.kind} / ${p.symbol}`;
+    }
+    keys.add(k);
+  }
+  return null;
+}
+
+/**
+ * Persist full prefs list. Disabled rows are kept (enabled=false).
+ * Delete = omit from list. Returns saved list or throws.
+ */
+async function persistPrefs(prefs, { quiet = false } = {}) {
+  const err = validatePrefs(prefs);
+  if (err) {
+    if (!quiet) toast(err, "err");
+    throw new Error(err);
+  }
+  prefsSaving = true;
+  try {
+    if (!quiet) setPrefsMsg("Saving…");
+    const data = await api("/api/me/prefs", {
+      method: "PUT",
+      body: JSON.stringify({ prefs }),
+    });
+    const saved = data.prefs || prefs;
+    if (!state.me) state.me = {};
+    state.me.prefs = saved;
+    prefsDraft = saved.map((p) => ({ ...p }));
+    if (!quiet) {
+      setPrefsMsg("Saved.", "ok");
+      toast("Preferences saved");
+    }
+    renderStatus();
+    return saved;
+  } finally {
+    prefsSaving = false;
+  }
+}
+
 function renderPrefs() {
   const root = $("#prefs-list");
+  const addWrap = $("#prefs-add-wrap");
+
   if (!prefsDraft.length) {
     root.innerHTML = `
-      <div class="prefs-empty muted">
-        No alerts configured yet. Click <strong>Add alert</strong> to choose a type
-        (Range or Spike) and set lots, SL/TP, and caps.
+      <div class="prefs-empty">
+        <p class="muted">No alerts configured yet.</p>
+        <p class="muted small">Add a Range (candle) or Spike alert, set lots / SL / TP / caps, then Save.</p>
+        <button type="button" class="btn primary" id="btn-add-pref-empty">+ Add alert</button>
       </div>`;
+    // Hide bottom add when empty — primary CTA is inside empty state
+    if (addWrap) addWrap.classList.add("hidden");
+    const emptyBtn = $("#btn-add-pref-empty");
+    if (emptyBtn) emptyBtn.addEventListener("click", onAddPref);
     return;
   }
+
+  if (addWrap) addWrap.classList.remove("hidden");
+
   root.innerHTML = prefsDraft
     .map((p, i) => {
       const on = !!p.enabled;
       return `
       <div class="pref-card ${on ? "" : "pref-disabled"}" data-i="${i}">
         <div class="pref-card-top">
-          <label class="toggle" title="${on ? "Enabled — click to pause" : "Paused — click to enable"}">
-            <input type="checkbox" name="enabled" ${on ? "checked" : ""} />
+          <label class="toggle" title="${
+            on ? "On — click to pause (keeps your settings)" : "Off — click to enable"
+          }">
+            <input type="checkbox" name="enabled" ${on ? "checked" : ""} ${
+              prefsSaving ? "disabled" : ""
+            } />
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-label">${on ? "On" : "Off"}</span>
           </label>
@@ -205,7 +275,9 @@ function renderPrefs() {
               p.symbol
             )}" />
           </div>
-          <button type="button" class="btn-icon danger-icon btn-delete-pref" title="Delete alert" aria-label="Delete">
+          <button type="button" class="btn-icon danger-icon btn-delete-pref" title="Delete alert permanently" aria-label="Delete" ${
+            prefsSaving ? "disabled" : ""
+          }>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="3 6 5 6 21 6"></polyline>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -245,32 +317,67 @@ function renderPrefs() {
     })
     .join("");
 
-  // Bind per-card events
   $$("#prefs-list .pref-card").forEach((card) => {
     const i = Number(card.dataset.i);
+
     const syncToggleLabel = () => {
       const on = card.querySelector('[name="enabled"]').checked;
       card.classList.toggle("pref-disabled", !on);
       const lab = card.querySelector(".toggle-label");
       if (lab) lab.textContent = on ? "On" : "Off";
     };
-    card.querySelector('[name="enabled"]').addEventListener("change", () => {
-      prefsDraft[i].enabled = card.querySelector('[name="enabled"]').checked;
+
+    card.querySelector('[name="enabled"]').addEventListener("change", async () => {
+      if (prefsSaving) return;
+      // Sync all fields first so we don't drop unsaved edits
+      collectPrefsFromDom();
+      const on = card.querySelector('[name="enabled"]').checked;
+      prefsDraft[i].enabled = on;
       syncToggleLabel();
+      try {
+        await persistPrefs(prefsDraft, { quiet: true });
+        toast(on ? "Alert enabled" : "Alert paused — settings kept");
+        setPrefsMsg(on ? "Alert on." : "Alert off (settings kept in DB).", "ok");
+        renderPrefs();
+      } catch (e) {
+        // Revert toggle on failure
+        prefsDraft[i].enabled = !on;
+        renderPrefs();
+        setPrefsMsg(e.message, "err");
+        toast(e.message, "err");
+      }
     });
-    card.querySelector(".btn-delete-pref").addEventListener("click", () => {
+
+    card.querySelector(".btn-delete-pref").addEventListener("click", async () => {
+      if (prefsSaving) return;
+      collectPrefsFromDom();
       const label = `${prefsDraft[i].kind} / ${prefsDraft[i].symbol}`;
-      if (!confirm(`Delete alert “${label}”? This removes it from your list (after Save).`)) {
+      if (
+        !confirm(
+          `Delete alert “${label}” permanently?\n\nThis removes it from the database. Use the On/Off toggle if you only want to pause.`
+        )
+      ) {
         return;
       }
-      prefsDraft.splice(i, 1);
+      const removed = prefsDraft.splice(i, 1)[0];
       renderPrefs();
+      try {
+        await persistPrefs(prefsDraft, { quiet: true });
+        toast(`Deleted ${label}`);
+        setPrefsMsg("Alert deleted.", "ok");
+        renderPrefs();
+      } catch (e) {
+        // Restore on failure
+        prefsDraft.splice(i, 0, removed);
+        renderPrefs();
+        setPrefsMsg(e.message, "err");
+        toast(e.message, "err");
+      }
     });
   });
 }
 
 function collectPrefsFromDom() {
-  // Sync draft from DOM so unsaved edits aren't lost
   $$("#prefs-list .pref-card").forEach((card) => {
     const i = Number(card.dataset.i);
     if (!prefsDraft[i]) return;
@@ -289,8 +396,19 @@ function collectPrefsFromDom() {
   return prefsDraft.slice();
 }
 
-function collectPrefs() {
-  return collectPrefsFromDom();
+function onAddPref() {
+  collectPrefsFromDom();
+  const hasCandle = prefsDraft.some((p) => p.kind === "candle");
+  const hasSpike = prefsDraft.some((p) => p.kind === "spike");
+  let kind = "candle";
+  if (hasCandle && !hasSpike) kind = "spike";
+  prefsDraft.push(newPref(kind));
+  renderPrefs();
+  setPrefsMsg("New alert added — edit fields, then Save (or toggle Off to pause).");
+  // Scroll to the new card
+  const cards = $$("#prefs-list .pref-card");
+  const last = cards[cards.length - 1];
+  if (last) last.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 async function loadMe() {
@@ -350,48 +468,16 @@ function bind() {
     toast("Logged out");
   });
 
-  $("#btn-add-pref").addEventListener("click", () => {
-    collectPrefsFromDom();
-    // Prefer adding spike if candle already present, else candle
-    const hasCandle = prefsDraft.some((p) => p.kind === "candle");
-    const hasSpike = prefsDraft.some((p) => p.kind === "spike");
-    let kind = "candle";
-    if (hasCandle && !hasSpike) kind = "spike";
-    else if (hasCandle && hasSpike) kind = "candle";
-    prefsDraft.push(newPref(kind));
-    renderPrefs();
-  });
+  $("#btn-add-pref").addEventListener("click", onAddPref);
 
   $("#btn-save-prefs").addEventListener("click", async () => {
-    const prefs = collectPrefs();
-    // Block duplicate kind+symbol in one save
-    const keys = new Set();
-    for (const p of prefs) {
-      const k = `${p.kind}|${p.symbol}`;
-      if (keys.has(k)) {
-        toast(`Duplicate alert: ${p.kind} / ${p.symbol}`, "err");
-        return;
-      }
-      keys.add(k);
-    }
-    const msg = $("#prefs-msg");
-    msg.textContent = "Saving…";
-    msg.className = "hint";
+    if (prefsSaving) return;
+    const prefs = collectPrefsFromDom();
     try {
-      const data = await api("/api/me/prefs", {
-        method: "PUT",
-        body: JSON.stringify({ prefs }),
-      });
-      state.me.prefs = data.prefs || prefs;
-      prefsDraft = (state.me.prefs || []).map((p) => ({ ...p }));
+      await persistPrefs(prefs);
       renderPrefs();
-      renderStatus();
-      msg.textContent = "Saved.";
-      msg.className = "hint ok";
-      toast("Preferences saved");
     } catch (e) {
-      msg.textContent = e.message;
-      msg.className = "hint err";
+      setPrefsMsg(e.message, "err");
       toast(e.message, "err");
     }
   });
