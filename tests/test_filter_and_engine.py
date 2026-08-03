@@ -56,6 +56,8 @@ def _enable_trading(monkeypatch):
     monkeypatch.setattr(config, "MAX_TRADES_PER_DAY", 100)
     monkeypatch.setattr(config, "COOLDOWN_SEC", 0)
     monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
+    # Avoid flaky skips when tests run near 01:05 local
+    monkeypatch.setattr(config, "MARKET_OPEN_BLACKOUT", False)
 
 
 def _alert(**kwargs):

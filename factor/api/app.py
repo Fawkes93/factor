@@ -192,6 +192,12 @@ def create_app(
             "breakeven_enabled": bool(getattr(config, "BREAKEVEN_ENABLED", True)),
             "breakeven_fraction": float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
             "breakeven": last_breakeven_status(),
+            "market_open_blackout": bool(getattr(config, "MARKET_OPEN_BLACKOUT", True)),
+            "market_open_time": getattr(config, "MARKET_OPEN_TIME", "01:05"),
+            "market_open_tz": getattr(config, "MARKET_OPEN_TZ", "Europe/Bucharest"),
+            "market_open_blackout_minutes": int(
+                getattr(config, "MARKET_OPEN_BLACKOUT_MINUTES", 15) or 15
+            ),
             "max_open_total": int(getattr(config, "MAX_OPEN_TOTAL", 1) or 1),
             "max_alert_age_sec": float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5),
             "xau_preset": (config.PRESETS.get("XAU/USD") or {}),
