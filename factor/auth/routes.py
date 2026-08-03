@@ -115,23 +115,8 @@ def ctrader_callback(
         raw_meta={"accounts": accounts, "selected": account, "host": host},
     )
 
-    # Default prefs: range (candle) + spike for XAU — disabled until user enables
-    existing = repos.list_prefs(user_id)
-    existing_keys = {(p.get("kind"), p.get("symbol")) for p in existing}
-    for kind in ("candle", "spike"):
-        key = (kind, "XAU/USD")
-        if key not in existing_keys:
-            repos.upsert_pref(
-                user_id=user_id,
-                kind=kind,
-                symbol="XAU/USD",
-                enabled=False,
-                max_concurrent=1,
-                max_per_day=5,
-                volume_lots=0.01,
-                sl_points=1000,
-                tp_points=1000,
-            )
+    # No default disabled rows — UI shows candle+spike templates; only enabled
+    # prefs are stored when the user saves Alerts.
 
     resp = RedirectResponse("/", status_code=302)
     set_session_cookie(resp, user_id)
@@ -250,24 +235,9 @@ async def put_prefs(request: Request):
     items = body.get("prefs") if isinstance(body, dict) else None
     if not isinstance(items, list):
         raise HTTPException(400, "prefs must be a list")
-    saved = []
-    for raw in items:
-        if not isinstance(raw, dict):
-            continue
-        kind = str(raw.get("kind") or "").strip()
-        symbol = str(raw.get("symbol") or "").strip()
-        if not kind or not symbol:
-            continue
-        row = repos.upsert_pref(
-            user_id=uid,
-            kind=kind,
-            symbol=symbol,
-            enabled=bool(raw.get("enabled", False)),
-            max_concurrent=int(raw.get("max_concurrent") or 1),
-            max_per_day=int(raw.get("max_per_day") or 5),
-            volume_lots=float(raw.get("volume_lots") or 0.01),
-            sl_points=int(raw.get("sl_points") or 1000),
-            tp_points=int(raw.get("tp_points") or 1000),
-        )
-        saved.append(row)
+    try:
+        # Replace set: only enabled rows kept (no duplicates, no growth on each save)
+        saved = repos.replace_prefs_for_user(uid, items, only_enabled=True)
+    except Exception as e:
+        raise HTTPException(500, f"save prefs failed: {e}") from e
     return {"count": len(saved), "prefs": saved}

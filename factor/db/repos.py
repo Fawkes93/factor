@@ -170,26 +170,90 @@ def upsert_pref(
     sl_points: int = 1000,
     tp_points: int = 1000,
 ) -> Dict[str, Any]:
+    """
+    One row per (user_id, kind, symbol). Update if exists; otherwise insert.
+    (Avoids PostgREST upsert quirks that can insert duplicates.)
+    """
     sb = get_supabase()
+    kind = str(kind).strip()
+    symbol = str(symbol).strip()
     payload = {
         "user_id": user_id,
         "kind": kind,
         "symbol": symbol,
-        "enabled": enabled,
+        "enabled": bool(enabled),
         "max_concurrent": int(max_concurrent),
         "max_per_day": int(max_per_day),
         "volume_lots": float(volume_lots),
         "sl_points": int(sl_points),
         "tp_points": int(tp_points),
     }
-    res = (
+    existing = (
         sb.table(T_PREFS)
-        .upsert(payload, on_conflict="user_id,kind,symbol")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("kind", kind)
+        .eq("symbol", symbol)
+        .limit(1)
         .execute()
     )
+    if existing.data:
+        pref_id = existing.data[0]["id"]
+        res = sb.table(T_PREFS).update(payload).eq("id", pref_id).execute()
+        if not res.data:
+            raise RuntimeError("update pref failed")
+        return res.data[0]
+    res = sb.table(T_PREFS).insert(payload).execute()
     if not res.data:
-        raise RuntimeError("upsert_pref failed")
+        raise RuntimeError("insert pref failed")
     return res.data[0]
+
+
+def replace_prefs_for_user(
+    user_id: str,
+    prefs: List[Dict[str, Any]],
+    *,
+    only_enabled: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Replace the user's prefs with the given list.
+
+    only_enabled=True (default): store only enabled alerts — one row each.
+    Disabled kinds are removed so the table stays lean.
+    """
+    sb = get_supabase()
+    # Wipe existing rows for this user, then insert clean set
+    sb.table(T_PREFS).delete().eq("user_id", user_id).execute()
+
+    saved: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in prefs:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind") or "").strip()
+        symbol = str(raw.get("symbol") or "").strip()
+        if not kind or not symbol:
+            continue
+        enabled = bool(raw.get("enabled", False))
+        if only_enabled and not enabled:
+            continue
+        key = (kind, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        row = upsert_pref(
+            user_id=user_id,
+            kind=kind,
+            symbol=symbol,
+            enabled=enabled if not only_enabled else True,
+            max_concurrent=int(raw.get("max_concurrent") or 1),
+            max_per_day=int(raw.get("max_per_day") or 5),
+            volume_lots=float(raw.get("volume_lots") or 0.01),
+            sl_points=int(raw.get("sl_points") or 1000),
+            tp_points=int(raw.get("tp_points") or 1000),
+        )
+        saved.append(row)
+    return saved
 
 
 def list_candidates_for_alert(
