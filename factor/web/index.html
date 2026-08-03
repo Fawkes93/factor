@@ -73,12 +73,15 @@
               <button type="button" id="btn-save-prefs" class="btn primary small">Save</button>
             </div>
             <p class="muted small">
-              Enable the alerts you want to trade.
-              <strong>candle</strong> = range expansion ·
-              <strong>spike</strong> = short-window spike.
-              Caps are per kind × symbol.
+              Add alerts you may want to trade.
+              <strong>Range (candle)</strong> = range expansion ·
+              <strong>Spike</strong> = short-window spike.
+              Use the toggle to pause without losing settings; trash to remove entirely.
             </p>
-            <div id="prefs-form"></div>
+            <div id="prefs-list" class="prefs-list"></div>
+            <div class="prefs-add-wrap">
+              <button type="button" id="btn-add-pref" class="btn ghost">+ Add alert</button>
+            </div>
             <p id="prefs-msg" class="hint"></p>
           </div>
         </div>

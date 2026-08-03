@@ -236,8 +236,9 @@ async def put_prefs(request: Request):
     if not isinstance(items, list):
         raise HTTPException(400, "prefs must be a list")
     try:
-        # Replace set: only enabled rows kept (no duplicates, no growth on each save)
-        saved = repos.replace_prefs_for_user(uid, items, only_enabled=True)
+        # Full replace: keeps disabled prefs (toggle off without losing settings).
+        # Delete in UI = omit from list. One row per (kind, symbol).
+        saved = repos.replace_prefs_for_user(uid, items, only_enabled=False)
     except Exception as e:
         raise HTTPException(500, f"save prefs failed: {e}") from e
     return {"count": len(saved), "prefs": saved}

@@ -153,47 +153,20 @@ const ALERT_KINDS = [
   { id: "spike", label: "Spike" },
 ];
 
-function defaultPrefs() {
-  return [
-    {
-      kind: "candle",
-      symbol: "XAU/USD",
-      enabled: false,
-      max_concurrent: 1,
-      max_per_day: 5,
-      volume_lots: 0.01,
-      sl_points: 1000,
-      tp_points: 1000,
-    },
-    {
-      kind: "spike",
-      symbol: "XAU/USD",
-      enabled: false,
-      max_concurrent: 1,
-      max_per_day: 5,
-      volume_lots: 0.01,
-      sl_points: 1000,
-      tp_points: 1000,
-    },
-  ];
-}
+/** Working copy of prefs in the form (add/toggle/delete before Save). */
+let prefsDraft = [];
 
-/** Ensure both candle + spike rows exist for XAU (merge with server prefs). */
-function mergeDefaultPrefs(serverPrefs) {
-  const defaults = defaultPrefs();
-  const byKey = new Map();
-  for (const p of serverPrefs || []) {
-    byKey.set(`${p.kind}|${p.symbol}`, p);
-  }
-  const out = [];
-  for (const d of defaults) {
-    const key = `${d.kind}|${d.symbol}`;
-    out.push(byKey.has(key) ? { ...d, ...byKey.get(key) } : { ...d });
-    byKey.delete(key);
-  }
-  // keep any extra prefs the user added
-  for (const p of byKey.values()) out.push(p);
-  return out;
+function newPref(kind = "candle") {
+  return {
+    kind,
+    symbol: "XAU/USD",
+    enabled: true,
+    max_concurrent: 1,
+    max_per_day: 5,
+    volume_lots: 0.01,
+    sl_points: 1000,
+    tp_points: 1000,
+  };
 }
 
 function kindSelect(selected) {
@@ -206,23 +179,42 @@ function kindSelect(selected) {
 }
 
 function renderPrefs() {
-  const prefs = mergeDefaultPrefs(state.me?.prefs || []);
-  const root = $("#prefs-form");
-  root.innerHTML = prefs
+  const root = $("#prefs-list");
+  if (!prefsDraft.length) {
+    root.innerHTML = `
+      <div class="prefs-empty muted">
+        No alerts configured yet. Click <strong>Add alert</strong> to choose a type
+        (Range or Spike) and set lots, SL/TP, and caps.
+      </div>`;
+    return;
+  }
+  root.innerHTML = prefsDraft
     .map((p, i) => {
+      const on = !!p.enabled;
       return `
-      <div class="pref-row" data-i="${i}">
+      <div class="pref-card ${on ? "" : "pref-disabled"}" data-i="${i}">
+        <div class="pref-card-top">
+          <label class="toggle" title="${on ? "Enabled — click to pause" : "Paused — click to enable"}">
+            <input type="checkbox" name="enabled" ${on ? "checked" : ""} />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">${on ? "On" : "Off"}</span>
+          </label>
+          <div class="pref-card-title">
+            <select name="kind" class="kind-select">${kindSelect(p.kind)}</select>
+            <input type="text" name="symbol" class="symbol-input" value="${escapeHtml(
+              p.symbol
+            )}" />
+          </div>
+          <button type="button" class="btn-icon danger-icon btn-delete-pref" title="Delete alert" aria-label="Delete">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              <line x1="10" y1="11" x2="10" y2="17"></line>
+              <line x1="14" y1="11" x2="14" y2="17"></line>
+            </svg>
+          </button>
+        </div>
         <div class="pref-fields">
-          <label class="field">Alert type
-            <select name="kind">${kindSelect(p.kind)}</select>
-          </label>
-          <label class="field">Symbol
-            <input type="text" name="symbol" value="${escapeHtml(p.symbol)}" />
-          </label>
-          <label class="field checkbox">
-            <input type="checkbox" name="enabled" ${p.enabled ? "checked" : ""} />
-            Enabled
-          </label>
           <label class="field">Max concurrent
             <input type="number" name="max_concurrent" min="0" step="1" value="${Number(
               p.max_concurrent ?? 1
@@ -252,12 +244,38 @@ function renderPrefs() {
       </div>`;
     })
     .join("");
+
+  // Bind per-card events
+  $$("#prefs-list .pref-card").forEach((card) => {
+    const i = Number(card.dataset.i);
+    const syncToggleLabel = () => {
+      const on = card.querySelector('[name="enabled"]').checked;
+      card.classList.toggle("pref-disabled", !on);
+      const lab = card.querySelector(".toggle-label");
+      if (lab) lab.textContent = on ? "On" : "Off";
+    };
+    card.querySelector('[name="enabled"]').addEventListener("change", () => {
+      prefsDraft[i].enabled = card.querySelector('[name="enabled"]').checked;
+      syncToggleLabel();
+    });
+    card.querySelector(".btn-delete-pref").addEventListener("click", () => {
+      const label = `${prefsDraft[i].kind} / ${prefsDraft[i].symbol}`;
+      if (!confirm(`Delete alert “${label}”? This removes it from your list (after Save).`)) {
+        return;
+      }
+      prefsDraft.splice(i, 1);
+      renderPrefs();
+    });
+  });
 }
 
-function collectPrefs() {
-  return $$("#prefs-form .pref-row").map((row) => {
-    const g = (name) => row.querySelector(`[name="${name}"]`);
-    return {
+function collectPrefsFromDom() {
+  // Sync draft from DOM so unsaved edits aren't lost
+  $$("#prefs-list .pref-card").forEach((card) => {
+    const i = Number(card.dataset.i);
+    if (!prefsDraft[i]) return;
+    const g = (name) => card.querySelector(`[name="${name}"]`);
+    prefsDraft[i] = {
       kind: g("kind").value.trim(),
       symbol: g("symbol").value.trim(),
       enabled: g("enabled").checked,
@@ -268,11 +286,17 @@ function collectPrefs() {
       tp_points: Number(g("tp_points").value),
     };
   });
+  return prefsDraft.slice();
+}
+
+function collectPrefs() {
+  return collectPrefsFromDom();
 }
 
 async function loadMe() {
   try {
     state.me = await api("/api/me");
+    prefsDraft = (state.me.prefs || []).map((p) => ({ ...p }));
     show("app");
     renderAccount();
     renderStatus();
@@ -326,8 +350,30 @@ function bind() {
     toast("Logged out");
   });
 
+  $("#btn-add-pref").addEventListener("click", () => {
+    collectPrefsFromDom();
+    // Prefer adding spike if candle already present, else candle
+    const hasCandle = prefsDraft.some((p) => p.kind === "candle");
+    const hasSpike = prefsDraft.some((p) => p.kind === "spike");
+    let kind = "candle";
+    if (hasCandle && !hasSpike) kind = "spike";
+    else if (hasCandle && hasSpike) kind = "candle";
+    prefsDraft.push(newPref(kind));
+    renderPrefs();
+  });
+
   $("#btn-save-prefs").addEventListener("click", async () => {
     const prefs = collectPrefs();
+    // Block duplicate kind+symbol in one save
+    const keys = new Set();
+    for (const p of prefs) {
+      const k = `${p.kind}|${p.symbol}`;
+      if (keys.has(k)) {
+        toast(`Duplicate alert: ${p.kind} / ${p.symbol}`, "err");
+        return;
+      }
+      keys.add(k);
+    }
     const msg = $("#prefs-msg");
     msg.textContent = "Saving…";
     msg.className = "hint";
@@ -337,6 +383,7 @@ function bind() {
         body: JSON.stringify({ prefs }),
       });
       state.me.prefs = data.prefs || prefs;
+      prefsDraft = (state.me.prefs || []).map((p) => ({ ...p }));
       renderPrefs();
       renderStatus();
       msg.textContent = "Saved.";

@@ -213,13 +213,14 @@ def replace_prefs_for_user(
     user_id: str,
     prefs: List[Dict[str, Any]],
     *,
-    only_enabled: bool = True,
+    only_enabled: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Replace the user's prefs with the given list.
+    Replace the user's prefs with the given list (full replace).
 
-    only_enabled=True (default): store only enabled alerts — one row each.
-    Disabled kinds are removed so the table stays lean.
+    Keeps disabled rows when only_enabled=False (default) so users can
+    toggle off without losing SL/TP/caps. only_enabled=True drops disabled.
+    One row per (kind, symbol); first occurrence wins if duplicates in payload.
     """
     sb = get_supabase()
     # Wipe existing rows for this user, then insert clean set
@@ -245,7 +246,7 @@ def replace_prefs_for_user(
             user_id=user_id,
             kind=kind,
             symbol=symbol,
-            enabled=enabled if not only_enabled else True,
+            enabled=enabled,
             max_concurrent=int(raw.get("max_concurrent") or 1),
             max_per_day=int(raw.get("max_per_day") or 5),
             volume_lots=float(raw.get("volume_lots") or 0.01),

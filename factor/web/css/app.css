@@ -246,21 +246,139 @@ table.data td.mono { font-family: var(--mono); font-size: 0.82rem; }
 .pill.skipped, .pill.closed { background: rgba(139, 155, 176, 0.2); color: var(--muted); }
 .pill.filled { background: rgba(91, 157, 255, 0.2); color: var(--accent); }
 
-/* Prefs form */
-.pref-row {
-  display: grid;
-  grid-template-columns: 1.2fr 1.2fr auto;
+/* Prefs list */
+.prefs-list {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  align-items: end;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border);
+  margin: 16px 0 8px;
 }
-.pref-row:last-child { border-bottom: none; }
+.prefs-empty {
+  padding: 28px 16px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.prefs-add-wrap {
+  margin-top: 12px;
+}
+.pref-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.pref-card.pref-disabled {
+  opacity: 0.72;
+  border-style: dashed;
+}
+.pref-card-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.pref-card-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.kind-select,
+.symbol-input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.9rem;
+}
+.kind-select { min-width: 150px; }
+.symbol-input {
+  font-family: var(--mono);
+  min-width: 110px;
+  flex: 1;
+}
+
+/* Toggle switch */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-track {
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 999px;
+  position: relative;
+  transition: background 0.15s ease;
+  display: inline-block;
+}
+.toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+}
+.toggle input:checked + .toggle-track {
+  background: var(--ok);
+}
+.toggle input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(20px);
+}
+.toggle-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-width: 1.5rem;
+  color: var(--muted);
+}
+.toggle input:checked ~ .toggle-label {
+  color: var(--ok);
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.btn-icon:hover {
+  background: rgba(240, 113, 120, 0.12);
+  border-color: rgba(240, 113, 120, 0.35);
+  color: var(--danger);
+}
+.danger-icon { color: var(--muted); }
+
 .pref-fields {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 10px;
-  grid-column: 1 / -1;
 }
 label.field {
   display: flex;
@@ -272,7 +390,7 @@ label.field {
 label.field input[type="text"],
 label.field input[type="number"],
 label.field select {
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
@@ -284,15 +402,6 @@ label.field select {
 label.field select {
   font-family: var(--font);
 }
-label.field.checkbox {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  padding-top: 22px;
-  color: var(--text);
-  font-size: 0.9rem;
-}
-label.field.checkbox input { width: 16px; height: 16px; }
 
 .code {
   margin-top: 14px;
