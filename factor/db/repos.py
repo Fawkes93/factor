@@ -416,8 +416,18 @@ def count_orders_today(
     return len(res.data or [])
 
 
-def count_open_orders_db(user_id: str, *, kind: Optional[str] = None) -> int:
-    """Local open-order count (supplement; cTrader remains source of truth)."""
+def count_open_orders_db(
+    user_id: str,
+    *,
+    kind: Optional[str] = None,
+    symbol: Optional[str] = None,
+) -> int:
+    """
+    Count Factor orders with status=open for concurrent caps.
+
+    Scoped to kind and/or symbol so max_concurrent is per alert pref
+    (kind + symbol), not account-wide.
+    """
     sb = get_supabase()
     q = (
         sb.table(T_ORDERS)
@@ -427,6 +437,8 @@ def count_open_orders_db(user_id: str, *, kind: Optional[str] = None) -> int:
     )
     if kind:
         q = q.eq("kind", kind)
+    if symbol:
+        q = q.eq("symbol", symbol)
     res = q.execute()
     if res.count is not None:
         return int(res.count)

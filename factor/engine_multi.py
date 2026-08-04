@@ -38,7 +38,7 @@ def process_alert_for_user(
     Handle one alert for one user.
 
     Claim-before-place on (user_id, alert_id). Caps from pref.
-    Open exposure from that user's cTrader account.
+    max_concurrent / max_per_day are per alert pref (kind + symbol).
     """
     user_id = str(user["id"])
     uid_short = user_id[:8]
@@ -105,7 +105,7 @@ def process_alert_for_user(
     if bo:
         return _skip(bo)
 
-    # 4) Daily cap (successful opens)
+    # 4) Daily cap (successful opens) — per pref kind (same as concurrent scope)
     max_day = int(pref.get("max_per_day") or 0)
     if max_day > 0:
         try:
@@ -118,7 +118,21 @@ def process_alert_for_user(
         if day_n >= max_day:
             return _skip(f"max_per_day:{day_n}>={max_day}")
 
-    # 5) Decrypt tokens + broker
+    # 5) Concurrent open orders — per pref (kind + symbol), Factor DB
+    max_conc = int(pref.get("max_concurrent") or 0)
+    if max_conc <= 0:
+        return _skip("max_concurrent_zero")
+    try:
+        open_n = repos.count_open_orders_db(
+            user_id, kind=alert.kind, symbol=alert.symbol
+        )
+    except Exception as e:
+        print(f"⚠️  [{uid_short}] count_open_orders_db failed: {e}")
+        return _skip(f"open_count_failed:{e}")
+    if open_n >= max_conc:
+        return _skip(f"max_concurrent:{open_n}>={max_conc}")
+
+    # 6) Decrypt tokens + broker
     if not config.FACTOR_TOKEN_ENC_KEY:
         return _skip("token_enc_key_missing")
     try:
@@ -134,17 +148,6 @@ def process_alert_for_user(
         host=str(connection.get("host") or "demo.ctraderapi.com"),
         dry_run=config.CTRADER_DRY_RUN,
     )
-
-    # 6) Concurrent open positions (cTrader source of truth)
-    max_conc = int(pref.get("max_concurrent") or 0)
-    if max_conc <= 0:
-        return _skip("max_concurrent_zero")
-    try:
-        open_n = broker.count_open_positions(None)
-    except Exception as e:
-        return _skip(f"broker_open_check_failed:{e}")
-    if open_n >= max_conc:
-        return _skip(f"broker_has_open_position:{open_n}>={max_conc}")
 
     # 7) Plan + place
     try:
