@@ -22,7 +22,8 @@ Static assets: `/static/css/app.css`, `/static/js/app.js`.
 1. Reaktor webhook verified (HMAC)  
 2. Load candidates: enabled pref for `(kind, symbol)`, trading on, not killed, has connection  
 3. Per user: **claim** `(user_id, alert_id)` → freshness → market-open blackout → daily cap (`max_per_day` per kind) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
-4. Background poll may move SL to **breakeven** at half TP  
+4. Background poll reconciles open `factor_orders` vs cTrader (marks closed when the position is gone) and may move SL to **breakeven** at half TP  
+
 
 No single-tenant SQLite engine and no Reaktor catch-up trading — **webhooks only**.
 

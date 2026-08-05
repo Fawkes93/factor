@@ -206,7 +206,8 @@ def _resolve_point_size(order: Dict[str, Any], meta: Dict[str, Any]) -> float:
         return 0.01
 
 
-def _extract_position_id(order: Dict[str, Any], positions: List[Dict[str, Any]]) -> Optional[int]:
+def _stored_position_id(order: Dict[str, Any]) -> Optional[int]:
+    """Position id Factor recorded for this order (no fuzzy match)."""
     pid = order.get("broker_position_id")
     if pid is not None and str(pid).strip() and not str(pid).startswith("dry-"):
         try:
@@ -220,6 +221,30 @@ def _extract_position_id(order: Dict[str, Any], positions: List[Dict[str, Any]])
             return int(be["position_id"])
         except (TypeError, ValueError):
             pass
+    broker_detail = detail.get("broker_detail") if isinstance(detail.get("broker_detail"), dict) else {}
+    for key in ("position_id", "positionId"):
+        if broker_detail.get(key) is not None:
+            try:
+                return int(broker_detail[key])
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _open_position_id_set(positions: List[Dict[str, Any]]) -> set:
+    ids: set = set()
+    for p in positions or []:
+        try:
+            ids.add(int(p["position_id"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return ids
+
+
+def _extract_position_id(order: Dict[str, Any], positions: List[Dict[str, Any]]) -> Optional[int]:
+    stored = _stored_position_id(order)
+    if stored is not None:
+        return stored
     # Match by side among open positions (best effort when only one open)
     side = str(order.get("side") or "").upper()
     want_buy = side in ("BUY", "UP", "LONG")
@@ -239,6 +264,62 @@ def _extract_position_id(order: Dict[str, Any], positions: List[Dict[str, Any]])
             return int(positions[0]["position_id"])
         except (TypeError, ValueError, KeyError):
             return None
+    return None
+
+
+def _mark_order_closed_local(order: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Persist status=closed for a Factor order that is no longer open on cTrader."""
+    order_id = order.get("id")
+    try:
+        repos.update_order(
+            str(order_id),
+            status="closed",
+            closed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            skip_reason=order.get("skip_reason") or reason,
+        )
+        print(
+            f"📕 Closed local order={str(order_id)[:8]} "
+            f"{order.get('kind')} {order.get('symbol')}: {reason}"
+        )
+    except Exception as e:
+        print(f"⚠️  mark closed failed order={order_id}: {e}")
+        return {
+            "order_id": order_id,
+            "action": "error",
+            "reason": f"mark_closed_failed:{e}",
+        }
+    return {
+        "order_id": order_id,
+        "action": "closed_local",
+        "reason": reason,
+    }
+
+
+def reconcile_order_vs_positions(
+    order: Dict[str, Any],
+    positions: List[Dict[str, Any]],
+    *,
+    dry: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    If the Factor open order is no longer on cTrader, mark it closed.
+
+    Returns a result dict when reconciled (closed / error), else None if still open
+    or not determinable.
+    """
+    if dry:
+        # Dry-run never has live positions — do not wipe local open rows
+        return None
+
+    open_ids = _open_position_id_set(positions)
+    stored = _stored_position_id(order)
+
+    if not positions:
+        return _mark_order_closed_local(order, "position_gone")
+
+    if stored is not None and stored not in open_ids:
+        return _mark_order_closed_local(order, f"position_gone:{stored}")
+
     return None
 
 
@@ -275,17 +356,18 @@ def process_open_order_for_be(
     *,
     broker: Any,
     positions: Optional[List[Dict[str, Any]]] = None,
+    be_enabled_global: bool = True,
 ) -> Dict[str, Any]:
     """
-    Check one open order; amend SL if BE trigger hit.
-    broker must implement list_open_positions_info / get_spot_for_symbol / amend_position_sl_tp
+    Reconcile one open order vs cTrader, then amend SL if BE trigger hit.
+
+    Always marks factor_orders closed when the cTrader position is gone
+    (including after BE already applied). BE amend only when enabled and not applied.
+
+    broker must implement list_open_positions_info / get_spot / amend_position_sl_tp
     """
     order_id = order.get("id")
     meta = _order_be_meta(order)
-    if not meta["enabled"]:
-        return {"order_id": order_id, "action": "skip", "reason": "be_disabled"}
-    if meta["applied"]:
-        return {"order_id": order_id, "action": "skip", "reason": "already_applied"}
 
     if positions is None:
         try:
@@ -294,21 +376,18 @@ def process_open_order_for_be(
             return {"order_id": order_id, "action": "skip", "reason": f"list_pos_failed:{e}"}
 
     dry = bool(getattr(broker, "_dry_run", False))
-    if not positions:
-        # In dry-run there are never live positions — don't wipe local open rows
-        if dry:
-            return {"order_id": order_id, "action": "skip", "reason": "dry_run_no_positions"}
-        # Position gone — mark closed locally
-        try:
-            repos.update_order(
-                str(order_id),
-                status="closed",
-                closed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                skip_reason=order.get("skip_reason") or "position_gone",
-            )
-        except Exception as e:
-            print(f"⚠️  BE mark closed failed order={order_id}: {e}")
-        return {"order_id": order_id, "action": "closed_local", "reason": "no_open_positions"}
+    if dry and not positions:
+        return {"order_id": order_id, "action": "skip", "reason": "dry_run_no_positions"}
+
+    # Reconcile first — critical for max_concurrent (DB open rows)
+    closed = reconcile_order_vs_positions(order, positions or [], dry=dry)
+    if closed is not None:
+        return closed
+
+    if not be_enabled_global or not meta["enabled"]:
+        return {"order_id": order_id, "action": "skip", "reason": "be_disabled"}
+    if meta["applied"]:
+        return {"order_id": order_id, "action": "skip", "reason": "already_applied"}
 
     pos_id = _extract_position_id(order, positions)
     pos = None
@@ -320,11 +399,12 @@ def process_open_order_for_be(
                     break
             except (TypeError, ValueError):
                 continue
-    if pos is None and len(positions) == 1:
+    if pos is None and len(positions) == 1 and _stored_position_id(order) is None:
         pos = positions[0]
         pos_id = int(pos["position_id"])
 
     if pos is None:
+        # Stored id already handled by reconcile; ambiguous match only
         return {"order_id": order_id, "action": "skip", "reason": "position_not_matched"}
 
     side = str(order.get("side") or pos.get("side") or "BUY")
@@ -446,11 +526,19 @@ def process_open_order_for_be(
 
 
 def run_breakeven_cycle() -> Dict[str, Any]:
-    """One pass over all open multi-user orders that may need BE."""
-    out: Dict[str, Any] = {"checked": 0, "moved": 0, "errors": 0, "results": []}
-    if not getattr(config, "BREAKEVEN_ENABLED", True):
-        out["reason"] = "breakeven_disabled"
-        return out
+    """
+    One pass over all open multi-user orders:
+    1) Reconcile factor_orders vs cTrader (mark closed when position gone)
+    2) Optionally move SL to breakeven when half-TP is hit
+    """
+    out: Dict[str, Any] = {
+        "checked": 0,
+        "moved": 0,
+        "closed": 0,
+        "errors": 0,
+        "results": [],
+    }
+    be_global = bool(getattr(config, "BREAKEVEN_ENABLED", True))
     if not supabase_configured():
         out["reason"] = "supabase_not_configured"
         return out
@@ -465,15 +553,11 @@ def run_breakeven_cycle() -> Dict[str, Any]:
         print(f"⚠️  BE list_open_orders_all failed: {e}")
         return out
 
-    # Group by user_id
+    # Group by user_id — include ALL open rows (even BE already applied)
     by_user: Dict[str, List[Dict[str, Any]]] = {}
     for o in open_orders:
         uid = str(o.get("user_id") or "")
         if not uid:
-            continue
-        # Skip if already applied
-        meta = _order_be_meta(o)
-        if meta["applied"] or not meta["enabled"]:
             continue
         by_user.setdefault(uid, []).append(o)
 
@@ -512,11 +596,16 @@ def run_breakeven_cycle() -> Dict[str, Any]:
             out["checked"] += 1
             try:
                 r = process_open_order_for_be(
-                    order, broker=broker, positions=positions
+                    order,
+                    broker=broker,
+                    positions=positions,
+                    be_enabled_global=be_global,
                 )
                 out["results"].append(r)
                 if r.get("action") == "moved":
                     out["moved"] += 1
+                elif r.get("action") == "closed_local":
+                    out["closed"] += 1
                 elif r.get("action") == "error":
                     out["errors"] += 1
             except Exception as e:
@@ -528,7 +617,11 @@ def run_breakeven_cycle() -> Dict[str, Any]:
 
 def _be_loop() -> None:
     interval = max(5.0, float(getattr(config, "BREAKEVEN_POLL_SEC", 15) or 15))
-    print(f"🛡️  Breakeven poll every {interval:g}s (fraction={getattr(config, 'BREAKEVEN_FRACTION', 0.5)})")
+    be_on = bool(getattr(config, "BREAKEVEN_ENABLED", True))
+    print(
+        f"🛡️  Position reconcile + BE poll every {interval:g}s "
+        f"(be_enabled={be_on} fraction={getattr(config, 'BREAKEVEN_FRACTION', 0.5)})"
+    )
     while not _be_stop.wait(interval):
         try:
             stats = run_breakeven_cycle()
@@ -537,27 +630,31 @@ def _be_loop() -> None:
                     "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "checked": stats.get("checked", 0),
                     "moved": stats.get("moved", 0),
+                    "closed": stats.get("closed", 0),
                     "error": stats.get("error") or (
                         f"{stats.get('errors')} errors" if stats.get("errors") else None
                     ),
                     "reason": stats.get("reason"),
                 }
             )
-            if stats.get("moved"):
-                print(f"🛡️  BE cycle moved={stats['moved']} checked={stats['checked']}")
+            if stats.get("moved") or stats.get("closed"):
+                print(
+                    f"🛡️  BE cycle moved={stats.get('moved', 0)} "
+                    f"closed={stats.get('closed', 0)} checked={stats.get('checked', 0)}"
+                )
         except Exception as e:
             _last_be["error"] = str(e)
             print(f"⚠️  BE cycle error: {e}")
 
 
 def start_breakeven_loop() -> None:
+    """Start background poll: always reconciles open orders; BE amend if enabled."""
     global _be_thread
-    if not getattr(config, "BREAKEVEN_ENABLED", True):
-        print("ℹ️  BREAKEVEN_ENABLED=false — no BE poll")
-        return
     if not supabase_configured():
-        print("ℹ️  Breakeven poll skipped — Supabase not configured")
+        print("ℹ️  Position/BE poll skipped — Supabase not configured")
         return
+    if not getattr(config, "BREAKEVEN_ENABLED", True):
+        print("ℹ️  BREAKEVEN_ENABLED=false — poll still runs for position reconcile only")
     if _be_thread and _be_thread.is_alive():
         return
     _be_stop.clear()

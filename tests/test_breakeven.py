@@ -1,9 +1,11 @@
-"""Pure-logic tests for breakeven-at-half-TP."""
+"""Pure-logic tests for breakeven-at-half-TP + position reconcile."""
 
 from factor.services.breakeven import (
     breakeven_sl_price,
     favorable_distance,
     mark_price_for_side,
+    process_open_order_for_be,
+    reconcile_order_vs_positions,
     should_move_to_breakeven,
     sl_is_worse_than_be,
     tp_distance_price,
@@ -117,3 +119,145 @@ def test_sl_is_worse():
     assert sl_is_worse_than_be(side="BUY", current_sl=1990.0, be_sl=2000.0) is True
     assert sl_is_worse_than_be(side="BUY", current_sl=2000.0, be_sl=2000.0) is False
     assert sl_is_worse_than_be(side="SELL", current_sl=2010.0, be_sl=2000.0) is True
+
+
+def test_reconcile_closes_when_no_positions(monkeypatch):
+    from factor.db import repos
+
+    updated = {}
+
+    def fake_update(oid, **fields):
+        updated["id"] = oid
+        updated.update(fields)
+        return {"id": oid, **fields}
+
+    monkeypatch.setattr(repos, "update_order", fake_update)
+    order = {
+        "id": "ord-600",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "broker_position_id": "42",
+        "status": "open",
+    }
+    r = reconcile_order_vs_positions(order, [], dry=False)
+    assert r is not None
+    assert r["action"] == "closed_local"
+    assert updated["status"] == "closed"
+    assert updated["id"] == "ord-600"
+
+
+def test_reconcile_closes_when_position_id_gone_others_open(monkeypatch):
+    """Order 600 closed on cTrader while another position remains — must free concurrent."""
+    from factor.db import repos
+
+    updated = {}
+    monkeypatch.setattr(
+        repos,
+        "update_order",
+        lambda oid, **fields: updated.update({"id": oid, **fields}) or {"id": oid, **fields},
+    )
+    order = {
+        "id": "ord-600",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "broker_position_id": "100",
+        "status": "open",
+        "detail": {"breakeven": {"applied": True, "enabled": True, "position_id": 100}},
+    }
+    other_open = [{"position_id": 200, "side": "BUY", "entry_price": 1.0}]
+    r = reconcile_order_vs_positions(order, other_open, dry=False)
+    assert r is not None
+    assert r["action"] == "closed_local"
+    assert "position_gone:100" in r["reason"]
+    assert updated["status"] == "closed"
+
+
+def test_reconcile_keeps_open_when_position_still_there():
+    order = {
+        "id": "ord-1",
+        "broker_position_id": "100",
+        "status": "open",
+    }
+    positions = [{"position_id": 100, "side": "BUY"}]
+    assert reconcile_order_vs_positions(order, positions, dry=False) is None
+
+
+def test_reconcile_dry_run_never_closes():
+    order = {"id": "ord-1", "broker_position_id": "1", "status": "open"}
+    assert reconcile_order_vs_positions(order, [], dry=True) is None
+
+
+def test_process_be_applied_still_reconciles_closed(monkeypatch):
+    """Regression: after BE applied, cycle used to skip the order entirely."""
+    from factor.db import repos
+
+    updated = {}
+    monkeypatch.setattr(
+        repos,
+        "update_order",
+        lambda oid, **fields: updated.update({"id": oid, **fields}) or {"id": oid, **fields},
+    )
+
+    class FakeBroker:
+        _dry_run = False
+
+        def list_open_positions_info(self):
+            return []
+
+    order = {
+        "id": "ord-600",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "broker_position_id": "55",
+        "entry_price": 2000.0,
+        "detail": {
+            "breakeven": {
+                "enabled": True,
+                "applied": True,
+                "fraction": 0.5,
+                "position_id": 55,
+            }
+        },
+    }
+    r = process_open_order_for_be(order, broker=FakeBroker(), positions=[])
+    assert r["action"] == "closed_local"
+    assert updated.get("status") == "closed"
+
+
+def test_process_be_applied_skip_when_still_open(monkeypatch):
+    class FakeBroker:
+        _dry_run = False
+
+        def list_open_positions_info(self):
+            return []
+
+        def get_spot(self, sym):
+            return {"bid": 2005.0, "ask": 2005.1}
+
+    order = {
+        "id": "ord-be",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "broker_position_id": "9",
+        "entry_price": 2000.0,
+        "tp_price": 2010.0,
+        "sl_price": 1990.0,
+        "detail": {
+            "breakeven": {"enabled": True, "applied": True, "fraction": 0.5, "position_id": 9}
+        },
+    }
+    positions = [
+        {
+            "position_id": 9,
+            "side": "BUY",
+            "entry_price": 2000.0,
+            "stop_loss": 2000.0,
+            "take_profit": 2010.0,
+            "broker_symbol": "XAUUSD",
+        }
+    ]
+    r = process_open_order_for_be(order, broker=FakeBroker(), positions=positions)
+    assert r["action"] == "skip"
+    assert r["reason"] == "already_applied"
