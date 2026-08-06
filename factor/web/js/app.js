@@ -531,7 +531,7 @@ function bind() {
     b.addEventListener("click", () => setTab(b.dataset.tab))
   );
 
-  $("#btn-logout").addEventListener("click", async () => {
+  async function doLogout() {
     try {
       await api("/auth/logout", { method: "POST" });
     } catch {
@@ -540,7 +540,10 @@ function bind() {
     state.me = null;
     show("login");
     toast("Logged out");
-  });
+  }
+  $("#btn-logout").addEventListener("click", doLogout);
+  const btnLogoutDanger = $("#btn-logout-danger");
+  if (btnLogoutDanger) btnLogoutDanger.addEventListener("click", doLogout);
 
   $("#btn-add-pref").addEventListener("click", onAddPref);
 

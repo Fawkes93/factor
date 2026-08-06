@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/favicon.svg" />
   <meta name="theme-color" content="#0c0f14" />
-  <link rel="stylesheet" href="/static/css/app.css?v=6" />
+  <link rel="stylesheet" href="/static/css/app.css?v=7" />
 </head>
 <body>
   <div id="app">
@@ -115,12 +115,19 @@
             </div>
             <pre id="kill-result" class="code hidden"></pre>
           </div>
+          <div class="card">
+            <h2>Session</h2>
+            <p class="muted small">Sign out of Factor on this device. Does not close positions or change kill switch.</p>
+            <div class="btn-row danger-session-actions">
+              <button type="button" id="btn-logout-danger" class="btn ghost">Log out</button>
+            </div>
+          </div>
         </div>
       </main>
     </section>
 
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/static/js/app.js?v=6"></script>
+  <script src="/static/js/app.js?v=7"></script>
 </body>
 </html>

@@ -333,6 +333,10 @@ a:hover { text-decoration: underline; }
   margin-top: 8px;
 }
 .danger-card .btn-row { justify-content: flex-start; }
+.danger-session-actions {
+  justify-content: flex-start;
+  margin-top: 4px;
+}
 
 /* Tables */
 .table-wrap { overflow-x: auto; }
