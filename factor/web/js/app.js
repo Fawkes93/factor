@@ -177,11 +177,11 @@ const ALERT_KINDS = [
 /**
  * Symbols offered in the Alerts UI.
  * `id` is stored and must match Reaktor alert.symbol (pair form).
- * Labels are the short names (XAU / USD / BTC).
+ * Labels are broker-style names shown in the dropdown.
  */
 const ALERT_SYMBOLS = [
-  { id: "XAU/USD", label: "XAU" },
-  { id: "EUR/USD", label: "USD" },
+  { id: "XAU/USD", label: "XAUUSD" },
+  { id: "EUR/USD", label: "EURUSD" },
   { id: "BTC/USD", label: "BTC" },
 ];
 
