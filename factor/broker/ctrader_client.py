@@ -34,7 +34,11 @@ PT_SUBSCRIBE_SPOTS_RES = 2128
 PT_SPOT_EVENT = 2129
 PT_UNSUBSCRIBE_SPOTS_REQ = 2130
 PT_ORDER_ERROR_EVENT = 2132
+PT_DEAL_LIST_REQ = 2133
+PT_DEAL_LIST_RES = 2134
 PT_ERROR_RES = 2142
+PT_DEAL_LIST_BY_POSITION_ID_REQ = 2179
+PT_DEAL_LIST_BY_POSITION_ID_RES = 2180
 PT_HEARTBEAT = 51  # ProtoHeartbeatEvent (common)
 
 # ProtoOAPositionStatus
@@ -322,6 +326,38 @@ class CTraderClient:
         except CTraderError:
             pass  # best-effort unsubscribe
         return {"bid": bid_f, "ask": ask_f, "symbol_id": int(symbol_id)}
+
+    def list_deals_by_position_id(
+        self,
+        position_id: int,
+        *,
+        from_timestamp_ms: Optional[int] = None,
+        to_timestamp_ms: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        ProtoOADealListByPositionIdReq (2179) — deals for one position.
+        Closing deals include closePositionDetail (grossProfit, etc.).
+        """
+        payload: Dict[str, Any] = {
+            "ctidTraderAccountId": self.account_id,
+            "positionId": int(position_id),
+        }
+        if from_timestamp_ms is not None:
+            payload["fromTimestamp"] = int(from_timestamp_ms)
+        if to_timestamp_ms is not None:
+            payload["toTimestamp"] = int(to_timestamp_ms)
+        msg = self._request(
+            PT_DEAL_LIST_BY_POSITION_ID_REQ,
+            payload,
+            expect=PT_DEAL_LIST_BY_POSITION_ID_RES,
+        )
+        if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(f"deal list by position failed: {msg.get('payload') or msg}")
+        body = msg.get("payload") or {}
+        deals = body.get("deal") or body.get("deals") or []
+        if not isinstance(deals, list):
+            return []
+        return [d for d in deals if isinstance(d, dict)]
 
     def list_open_positions_info(self) -> List[Dict[str, Any]]:
         """Normalized open positions for BE / management."""

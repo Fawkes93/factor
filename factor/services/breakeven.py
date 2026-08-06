@@ -20,6 +20,7 @@ from factor.crypto.tokens import decrypt_token
 from factor.db import repos
 from factor.db.client import supabase_configured
 from factor.rules.presets import resolve_preset
+from factor.services.outcome import RESULT_UNKNOWN
 
 _be_stop = threading.Event()
 _be_thread: Optional[threading.Thread] = None
@@ -267,19 +268,92 @@ def _extract_position_id(order: Dict[str, Any], positions: List[Dict[str, Any]])
     return None
 
 
-def _mark_order_closed_local(order: Dict[str, Any], reason: str) -> Dict[str, Any]:
-    """Persist status=closed for a Factor order that is no longer open on cTrader."""
-    order_id = order.get("id")
+def _order_created_ms(order: Dict[str, Any]) -> Optional[int]:
+    raw = order.get("created_at")
+    if not raw:
+        return None
     try:
-        repos.update_order(
-            str(order_id),
-            status="closed",
-            closed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            skip_reason=order.get("skip_reason") or reason,
-        )
+        s = str(raw).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _lookup_close_outcome(
+    order: Dict[str, Any],
+    *,
+    broker: Any = None,
+    position_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Fetch won/lost from cTrader deals; fall back to unknown."""
+    pid = position_id if position_id is not None else _stored_position_id(order)
+    if pid is None or broker is None:
+        return {"result": RESULT_UNKNOWN, "close_deals": 0, "reason": "no_position_or_broker"}
+    try:
+        if hasattr(broker, "position_close_outcome"):
+            return broker.position_close_outcome(
+                int(pid),
+                from_timestamp_ms=_order_created_ms(order),
+            )
+    except Exception as e:
+        print(f"⚠️  close outcome lookup failed pos={pid}: {e}")
+        return {"result": RESULT_UNKNOWN, "close_deals": 0, "reason": f"lookup_failed:{e}"}
+    return {"result": RESULT_UNKNOWN, "close_deals": 0}
+
+
+def _mark_order_closed_local(
+    order: Dict[str, Any],
+    reason: str,
+    *,
+    broker: Any = None,
+    outcome: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Persist status=closed (+ won/lost result) for a Factor order gone from cTrader."""
+    order_id = order.get("id")
+    if outcome is None:
+        outcome = _lookup_close_outcome(order, broker=broker)
+    result = str(outcome.get("result") or RESULT_UNKNOWN)
+
+    detail = dict(order.get("detail") or {}) if isinstance(order.get("detail"), dict) else {}
+    detail["outcome"] = {
+        "result": result,
+        "net_pnl": outcome.get("net_pnl"),
+        "gross_profit": outcome.get("gross_profit"),
+        "swap": outcome.get("swap"),
+        "commission": outcome.get("commission"),
+        "close_price": outcome.get("close_price"),
+        "close_deals": outcome.get("close_deals"),
+        "position_id": outcome.get("position_id") or _stored_position_id(order),
+        "closed_reason": reason,
+    }
+
+    fields: Dict[str, Any] = {
+        "status": "closed",
+        "closed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "skip_reason": order.get("skip_reason") or reason,
+        "detail": detail,
+        "result": result,
+    }
+    try:
+        try:
+            repos.update_order(str(order_id), **fields)
+        except Exception as col_err:
+            # Column may be missing before sql/003_order_result.sql
+            if "result" in str(col_err).lower() or "column" in str(col_err).lower():
+                fields.pop("result", None)
+                repos.update_order(str(order_id), **fields)
+            else:
+                raise
+        tag = {"won": "✅", "lost": "❌", "breakeven": "➖"}.get(result, "📕")
+        pnl = outcome.get("net_pnl")
+        pnl_s = f" pnl={pnl}" if pnl is not None else ""
         print(
-            f"📕 Closed local order={str(order_id)[:8]} "
-            f"{order.get('kind')} {order.get('symbol')}: {reason}"
+            f"{tag} Closed local order={str(order_id)[:8]} "
+            f"{order.get('kind')} {order.get('symbol')} "
+            f"result={result}{pnl_s}: {reason}"
         )
     except Exception as e:
         print(f"⚠️  mark closed failed order={order_id}: {e}")
@@ -292,6 +366,8 @@ def _mark_order_closed_local(order: Dict[str, Any], reason: str) -> Dict[str, An
         "order_id": order_id,
         "action": "closed_local",
         "reason": reason,
+        "result": result,
+        "outcome": outcome,
     }
 
 
@@ -300,6 +376,7 @@ def reconcile_order_vs_positions(
     positions: List[Dict[str, Any]],
     *,
     dry: bool = False,
+    broker: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """
     If the Factor open order is no longer on cTrader, mark it closed.
@@ -315,10 +392,12 @@ def reconcile_order_vs_positions(
     stored = _stored_position_id(order)
 
     if not positions:
-        return _mark_order_closed_local(order, "position_gone")
+        return _mark_order_closed_local(order, "position_gone", broker=broker)
 
     if stored is not None and stored not in open_ids:
-        return _mark_order_closed_local(order, f"position_gone:{stored}")
+        return _mark_order_closed_local(
+            order, f"position_gone:{stored}", broker=broker
+        )
 
     return None
 
@@ -380,7 +459,9 @@ def process_open_order_for_be(
         return {"order_id": order_id, "action": "skip", "reason": "dry_run_no_positions"}
 
     # Reconcile first — critical for max_concurrent (DB open rows)
-    closed = reconcile_order_vs_positions(order, positions or [], dry=dry)
+    closed = reconcile_order_vs_positions(
+        order, positions or [], dry=dry, broker=broker
+    )
     if closed is not None:
         return closed
 

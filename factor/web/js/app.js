@@ -78,6 +78,24 @@ function pill(status) {
   return `<span class="pill ${s}">${escapeHtml(status || "—")}</span>`;
 }
 
+/** Won / Lost / Break-even tag from result column or detail.outcome */
+function orderResult(o) {
+  const r = (o && (o.result || (o.detail && o.detail.outcome && o.detail.outcome.result))) || "";
+  const key = String(r).toLowerCase();
+  if (!key || key === "null" || key === "undefined") {
+    if ((o && o.status) === "open") return "—";
+    if ((o && o.status) === "closed") return pill("unknown");
+    return "—";
+  }
+  const labels = {
+    won: "Won",
+    lost: "Lost",
+    breakeven: "Break-even",
+    unknown: "Unknown",
+  };
+  return `<span class="pill ${escapeHtml(key)}">${escapeHtml(labels[key] || key)}</span>`;
+}
+
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -129,6 +147,7 @@ function ordersTable(orders, emptyMsg) {
       <td class="mono">${escapeHtml(o.symbol)}</td>
       <td>${escapeHtml(o.side)}</td>
       <td>${pill(o.status)}</td>
+      <td>${orderResult(o)}</td>
       <td class="mono">${escapeHtml(o.reaktor_alert_id)}</td>
       <td class="mono">${escapeHtml(o.broker_order_id || o.skip_reason || "—")}</td>
     </tr>`
@@ -139,7 +158,7 @@ function ordersTable(orders, emptyMsg) {
       <thead>
         <tr>
           <th>Time</th><th>Kind</th><th>Symbol</th><th>Side</th>
-          <th>Status</th><th>Alert</th><th>Broker / reason</th>
+          <th>Status</th><th>Result</th><th>Alert</th><th>Broker / reason</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>

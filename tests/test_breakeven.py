@@ -144,6 +144,8 @@ def test_reconcile_closes_when_no_positions(monkeypatch):
     assert r["action"] == "closed_local"
     assert updated["status"] == "closed"
     assert updated["id"] == "ord-600"
+    # Without broker, result is unknown but still closed
+    assert updated.get("result") in ("unknown", None) or updated["detail"]["outcome"]["result"] == "unknown"
 
 
 def test_reconcile_closes_when_position_id_gone_others_open(monkeypatch):

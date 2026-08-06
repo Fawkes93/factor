@@ -269,6 +269,35 @@ class CTraderBroker:
             ) as client:
                 return client.list_open_positions_info()
 
+    def position_close_outcome(
+        self,
+        position_id: int,
+        *,
+        from_timestamp_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Look up cTrader close deals for a position and return won/lost summary.
+        """
+        from factor.services.outcome import RESULT_UNKNOWN, summarize_close_deals
+
+        if not self.configured() or self._dry_run:
+            return {"result": RESULT_UNKNOWN, "close_deals": 0, "reason": "dry_or_unconfigured"}
+        with self._lock:
+            with CTraderClient(
+                host=self._host,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                access_token=self._access_token,
+                account_id=int(self._account_id),
+            ) as client:
+                deals = client.list_deals_by_position_id(
+                    int(position_id),
+                    from_timestamp_ms=from_timestamp_ms,
+                )
+        out = summarize_close_deals(deals)
+        out["position_id"] = int(position_id)
+        return out
+
     def get_spot(self, broker_symbol: str) -> Dict[str, float]:
         if not self.configured():
             raise CTraderError("cTrader not configured")

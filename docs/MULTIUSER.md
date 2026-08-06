@@ -50,7 +50,8 @@ Redirect URI must match Open API app settings exactly (`CTRADER_REDIRECT_URI`).
 
 1. SQL Editor → run `sql/001_factor_multiuser.sql`  
 2. Then `sql/002_breakeven.sql` (optional BE pref column)  
-3. Project Settings → API → **service_role** key (server only)
+3. Then `sql/003_order_result.sql` (won/lost `result` column on closed orders)  
+4. Project Settings → API → **service_role** key (server only)
 
 ## Required env (Render)
 

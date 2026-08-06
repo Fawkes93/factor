@@ -245,6 +245,10 @@ table.data td.mono { font-family: var(--mono); font-size: 0.82rem; }
 .pill.rejected, .pill.error { background: rgba(240, 113, 120, 0.15); color: var(--danger); }
 .pill.skipped, .pill.closed { background: rgba(139, 155, 176, 0.2); color: var(--muted); }
 .pill.filled { background: rgba(91, 157, 255, 0.2); color: var(--accent); }
+.pill.won { background: rgba(61, 214, 140, 0.2); color: var(--ok); font-weight: 600; }
+.pill.lost { background: rgba(240, 113, 120, 0.2); color: var(--danger); font-weight: 600; }
+.pill.breakeven { background: rgba(240, 180, 41, 0.18); color: var(--warn); font-weight: 600; }
+.pill.unknown { background: rgba(139, 155, 176, 0.2); color: var(--muted); }
 
 /* Prefs list */
 .prefs-list {
