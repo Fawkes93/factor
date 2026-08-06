@@ -1,7 +1,11 @@
-"""Pure-logic tests for breakeven-at-half-TP + position reconcile."""
+"""Pure-logic tests for breakeven + position reconcile."""
+
+from types import SimpleNamespace
 
 from factor.services.breakeven import (
     breakeven_sl_price,
+    build_breakeven_order_detail,
+    clamp_breakeven_fraction,
     favorable_distance,
     mark_price_for_side,
     process_open_order_for_be,
@@ -39,6 +43,28 @@ def test_breakeven_sl_with_buffer():
     ) == 1999.95
 
 
+def test_clamp_breakeven_fraction():
+    assert clamp_breakeven_fraction(0.9) == 0.9
+    assert clamp_breakeven_fraction(0) == 0.5
+    assert clamp_breakeven_fraction(1.5) == 0.5
+    assert clamp_breakeven_fraction("0.75") == 0.75
+
+
+def test_build_detail_uses_pref_fraction():
+    plan = SimpleNamespace(tp_points=1000, sl_points=1000, point_size=0.01)
+    d = build_breakeven_order_detail(
+        plan=plan,
+        pref={"breakeven_half_tp": True, "breakeven_fraction": 0.9},
+    )
+    assert d["enabled"] is True
+    assert d["fraction"] == 0.9
+    d2 = build_breakeven_order_detail(
+        plan=plan,
+        pref={"breakeven_half_tp": True},
+    )
+    assert d2["fraction"] == 0.5
+
+
 def test_should_move_buy_half_tp():
     # entry 2000, TP +10 (1000 pts * 0.01), half = +5 → mark 2005
     ok, be, reason = should_move_to_breakeven(
@@ -53,6 +79,32 @@ def test_should_move_buy_half_tp():
     assert ok is True
     assert be == 2000.0
     assert "trigger" in reason
+
+
+def test_should_move_at_custom_fraction():
+    # 90% of +10 TP = +9 → mark 2009
+    ok, be, reason = should_move_to_breakeven(
+        side="BUY",
+        entry=2000.0,
+        mark=2009.0,
+        tp_points=1000,
+        point_size=0.01,
+        fraction=0.9,
+        current_sl=1990.0,
+    )
+    assert ok is True
+    assert be == 2000.0
+    ok2, _, r2 = should_move_to_breakeven(
+        side="BUY",
+        entry=2000.0,
+        mark=2008.0,
+        tp_points=1000,
+        point_size=0.01,
+        fraction=0.9,
+        current_sl=1990.0,
+    )
+    assert ok2 is False
+    assert "not_yet" in r2
 
 
 def test_should_not_move_before_half():

@@ -160,8 +160,20 @@ def list_prefs(user_id: str) -> List[Dict[str, Any]]:
         row = dict(r)
         if "breakeven_half_tp" not in row:
             row["breakeven_half_tp"] = True
+        if row.get("breakeven_fraction") is None:
+            row["breakeven_fraction"] = 0.5
         rows.append(row)
     return rows
+
+
+def _normalize_breakeven_fraction(raw: Any, default: float = 0.5) -> float:
+    try:
+        f = float(raw)
+    except (TypeError, ValueError):
+        f = float(default)
+    if f <= 0 or f > 1.0:
+        f = float(default) if 0 < float(default) <= 1.0 else 0.5
+    return f
 
 
 def upsert_pref(
@@ -176,6 +188,7 @@ def upsert_pref(
     sl_points: int = 1000,
     tp_points: int = 1000,
     breakeven_half_tp: bool = True,
+    breakeven_fraction: float = 0.5,
 ) -> Dict[str, Any]:
     """
     One row per (user_id, kind, symbol). Update if exists; otherwise insert.
@@ -184,6 +197,7 @@ def upsert_pref(
     sb = get_supabase()
     kind = str(kind).strip()
     symbol = str(symbol).strip()
+    be_frac = _normalize_breakeven_fraction(breakeven_fraction, 0.5)
     base = {
         "user_id": user_id,
         "kind": kind,
@@ -195,8 +209,13 @@ def upsert_pref(
         "sl_points": int(sl_points),
         "tp_points": int(tp_points),
     }
-    # Prefer with BE column (sql/002); fall back if column not migrated yet
+    # Prefer full BE columns; fall back if migrations not applied yet
     payloads = [
+        {
+            **base,
+            "breakeven_half_tp": bool(breakeven_half_tp),
+            "breakeven_fraction": be_frac,
+        },
         {**base, "breakeven_half_tp": bool(breakeven_half_tp)},
         base,
     ]
@@ -218,18 +237,20 @@ def upsert_pref(
                 if not res.data:
                     raise RuntimeError("update pref failed")
                 # echo BE into response if column missing so UI still shows choice
-                row = res.data[0]
+                row = dict(res.data[0])
                 if "breakeven_half_tp" not in row:
-                    row = dict(row)
                     row["breakeven_half_tp"] = bool(breakeven_half_tp)
+                if row.get("breakeven_fraction") is None:
+                    row["breakeven_fraction"] = be_frac
                 return row
             res = sb.table(T_PREFS).insert(payload).execute()
             if not res.data:
                 raise RuntimeError("insert pref failed")
-            row = res.data[0]
+            row = dict(res.data[0])
             if "breakeven_half_tp" not in row:
-                row = dict(row)
                 row["breakeven_half_tp"] = bool(breakeven_half_tp)
+            if row.get("breakeven_fraction") is None:
+                row["breakeven_fraction"] = be_frac
             return row
         except Exception as e:
             last_err = e
@@ -270,8 +291,9 @@ def replace_prefs_for_user(
         if key in seen:
             continue
         seen.add(key)
-        # Default BE on when key omitted
+        # Default BE on when key omitted; fraction defaults to half TP
         be_raw = raw.get("breakeven_half_tp", True)
+        be_frac = raw.get("breakeven_fraction", 0.5)
         row = upsert_pref(
             user_id=user_id,
             kind=kind,
@@ -283,6 +305,7 @@ def replace_prefs_for_user(
             sl_points=int(raw.get("sl_points") or 1000),
             tp_points=int(raw.get("tp_points") or 1000),
             breakeven_half_tp=bool(be_raw),
+            breakeven_fraction=_normalize_breakeven_fraction(be_frac, 0.5),
         )
         saved.append(row)
     return saved

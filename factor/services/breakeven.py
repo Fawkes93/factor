@@ -178,10 +178,11 @@ def _order_be_meta(order: Dict[str, Any]) -> Dict[str, Any]:
     broker_detail = detail.get("broker_detail") if isinstance(detail.get("broker_detail"), dict) else {}
     if isinstance(broker_detail.get("plan"), dict):
         plan = broker_detail["plan"]
+    default_frac = float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5)
     return {
         "enabled": bool(be.get("enabled", True)),
         "applied": bool(be.get("applied", False)),
-        "fraction": float(be.get("fraction") or getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
+        "fraction": clamp_breakeven_fraction(be.get("fraction"), default_frac),
         "buffer_points": float(
             be.get("buffer_points")
             if be.get("buffer_points") is not None
@@ -402,6 +403,17 @@ def reconcile_order_vs_positions(
     return None
 
 
+def clamp_breakeven_fraction(raw: Any, default: float = 0.5) -> float:
+    """Fraction of TP distance that triggers BE; clamped to (0, 1]."""
+    try:
+        f = float(raw)
+    except (TypeError, ValueError):
+        f = float(default)
+    if f <= 0 or f > 1.0:
+        f = float(default) if 0 < float(default) <= 1.0 else 0.5
+    return f
+
+
 def build_breakeven_order_detail(
     *,
     plan: Any,
@@ -414,10 +426,16 @@ def build_breakeven_order_detail(
         enabled = bool(getattr(config, "BREAKEVEN_ENABLED", True)) and bool(
             pref.get("breakeven_half_tp", True)
         )
+    default_frac = float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5)
+    # Per-pref fraction wins; fall back to server default (legacy 0.5)
+    if pref.get("breakeven_fraction") is not None:
+        frac = clamp_breakeven_fraction(pref.get("breakeven_fraction"), default_frac)
+    else:
+        frac = clamp_breakeven_fraction(default_frac, 0.5)
     return {
         "enabled": bool(enabled),
         "applied": False,
-        "fraction": float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
+        "fraction": frac,
         "buffer_points": float(getattr(config, "BREAKEVEN_BUFFER_POINTS", 0) or 0),
         "tp_points": getattr(plan, "tp_points", None),
         "sl_points": getattr(plan, "sl_points", None),

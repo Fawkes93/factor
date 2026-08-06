@@ -126,6 +126,8 @@ MARKET_OPEN_WEEKDAYS = _csv_list(os.getenv("MARKET_OPEN_WEEKDAYS"), ["0"])
 # Breakeven protection (open positions)
 # When favorable move reaches FRACTION of TP distance, move SL to entry
 # (± BUFFER points so spread doesn't scratch you instantly).
+# Per-alert fraction is set in the dashboard (breakeven_fraction); this is
+# the server default when a pref omits it.
 # ---------------------------------------------------------------------------
 BREAKEVEN_ENABLED = os.getenv("BREAKEVEN_ENABLED", "true").lower() in (
     "1",
@@ -133,7 +135,7 @@ BREAKEVEN_ENABLED = os.getenv("BREAKEVEN_ENABLED", "true").lower() in (
     "yes",
     "on",
 )
-BREAKEVEN_FRACTION = float(os.getenv("BREAKEVEN_FRACTION") or "0.5")  # half of TP
+BREAKEVEN_FRACTION = float(os.getenv("BREAKEVEN_FRACTION") or "0.5")  # default if pref omits
 BREAKEVEN_BUFFER_POINTS = float(os.getenv("BREAKEVEN_BUFFER_POINTS") or "0")
 BREAKEVEN_POLL_SEC = float(os.getenv("BREAKEVEN_POLL_SEC") or "15")
 

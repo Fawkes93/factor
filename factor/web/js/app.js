@@ -200,7 +200,22 @@ function newPref(kind = "candle") {
     sl_points: 1000,
     tp_points: 1000,
     breakeven_half_tp: true,
+    breakeven_fraction: 0.5,
   };
+}
+
+/** Display fraction of TP as percent for the form (0.5 → 50). */
+function beFractionToPercent(frac) {
+  const f = Number(frac);
+  if (!Number.isFinite(f) || f <= 0) return 50;
+  return Math.round(Math.min(100, Math.max(1, f * 100)));
+}
+
+/** Form percent → stored fraction (50 → 0.5). */
+function bePercentToFraction(pct) {
+  const p = Number(pct);
+  if (!Number.isFinite(p) || p <= 0) return 0.5;
+  return Math.min(1, Math.max(0.01, p / 100));
 }
 
 function kindSelect(selected) {
@@ -377,11 +392,17 @@ function renderPrefs() {
               p.tp_points ?? 1000
             )}" />
           </label>
-          <label class="field field-check" title="When price reaches half of TP distance, move SL to entry (breakeven)">
-            <span>BE at ½ TP</span>
+          <label class="field field-check" title="Move SL to entry when price has made this fraction of the TP distance">
+            <span>Breakeven</span>
             <input type="checkbox" name="breakeven_half_tp" ${
               p.breakeven_half_tp !== false ? "checked" : ""
             } />
+          </label>
+          <label class="field" title="Trigger BE when favorable move reaches this % of TP distance (50 = half TP)">
+            BE at % of TP
+            <input type="number" name="breakeven_pct" min="1" max="100" step="1" value="${beFractionToPercent(
+              p.breakeven_fraction ?? 0.5
+            )}" />
           </label>
         </div>
       </div>`;
@@ -454,6 +475,7 @@ function collectPrefsFromDom() {
     if (!prefsDraft[i]) return;
     const g = (name) => card.querySelector(`[name="${name}"]`);
     const beEl = g("breakeven_half_tp");
+    const bePctEl = g("breakeven_pct");
     prefsDraft[i] = {
       kind: g("kind").value.trim(),
       symbol: g("symbol").value.trim(),
@@ -464,6 +486,9 @@ function collectPrefsFromDom() {
       sl_points: Number(g("sl_points").value),
       tp_points: Number(g("tp_points").value),
       breakeven_half_tp: beEl ? beEl.checked : true,
+      breakeven_fraction: bePctEl
+        ? bePercentToFraction(bePctEl.value)
+        : Number(prefsDraft[i].breakeven_fraction) || 0.5,
     };
   });
   return prefsDraft.slice();

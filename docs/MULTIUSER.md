@@ -49,8 +49,8 @@ Redirect URI must match Open API app settings exactly (`CTRADER_REDIRECT_URI`).
 ## Supabase setup
 
 1. SQL Editor → run `sql/001_factor_multiuser.sql`  
-2. Then `sql/002_breakeven.sql` (optional BE pref column)  
-3. Then `sql/003_order_result.sql` (won/lost `result` column on closed orders)  
+2. Then `sql/002_breakeven.sql` (optional BE on/off pref column)  
+3. Then `sql/004_breakeven_fraction.sql` (per-pref BE % of TP)  
 4. Project Settings → API → **service_role** key (server only)
 
 ## Required env (Render)
