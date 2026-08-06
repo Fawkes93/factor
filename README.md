@@ -87,6 +87,6 @@ pytest -q
 - `CTRADER_DRY_RUN` for wiring without orders  
 - Per-user kill switch on the dashboard  
 - Claim de-dupe on `(user_id, alert_id)`, skip `NEUTRAL`, caps from prefs  
-- Market-open blackout (first 15 minutes after ~01:05 local)  
+- Market-open blackout (first 15 minutes after ~01:05 local, **Monday only** by default)  
 
 Live money: only after demo is reliable — set `CTRADER_HOST=live` + live OAuth.

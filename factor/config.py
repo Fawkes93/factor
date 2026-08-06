@@ -105,7 +105,7 @@ MAX_ALERT_AGE_SEC = float(os.getenv("MAX_ALERT_AGE_SEC") or "5")
 
 # ---------------------------------------------------------------------------
 # Market-open blackout — ignore alerts in the first N minutes after open.
-# Default matches typical XAU weekly reopen ~01:05 Europe/Bucharest (+02/+03).
+# Default: Monday only (XAU weekly reopen ~01:05 Europe/Bucharest).
 # Evaluated on alert.triggered_at (not "now"), so delayed webhooks stay correct.
 # ---------------------------------------------------------------------------
 MARKET_OPEN_BLACKOUT = os.getenv("MARKET_OPEN_BLACKOUT", "true").lower() in (
@@ -118,9 +118,9 @@ MARKET_OPEN_BLACKOUT = os.getenv("MARKET_OPEN_BLACKOUT", "true").lower() in (
 MARKET_OPEN_TIME = (os.getenv("MARKET_OPEN_TIME") or "01:05").strip()
 MARKET_OPEN_TZ = (os.getenv("MARKET_OPEN_TZ") or "Europe/Bucharest").strip()
 MARKET_OPEN_BLACKOUT_MINUTES = int(os.getenv("MARKET_OPEN_BLACKOUT_MINUTES") or "15")
-# Optional: comma weekdays 0=Mon … 6=Sun (Python). Empty = every day.
-# Example weekly-only reopen Monday: MARKET_OPEN_WEEKDAYS=0
-MARKET_OPEN_WEEKDAYS = _csv_list(os.getenv("MARKET_OPEN_WEEKDAYS"), [])
+# Comma weekdays 0=Mon … 6=Sun (Python). Default Monday only (weekly reopen).
+# Every day: MARKET_OPEN_WEEKDAYS=0,1,2,3,4,5,6
+MARKET_OPEN_WEEKDAYS = _csv_list(os.getenv("MARKET_OPEN_WEEKDAYS"), ["0"])
 
 # ---------------------------------------------------------------------------
 # Breakeven protection (open positions)

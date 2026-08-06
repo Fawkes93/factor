@@ -107,3 +107,39 @@ def test_weekday_filter():
         )
         is not None
     )
+
+
+def test_monday_only_skips_tue_fri():
+    """Default product intent: blackout Mon weekly reopen, not mid-week 01:05."""
+    # 2026-08-04 is Tuesday
+    tue = _at_bucharest(1, 10, day=4, month=8, year=2026)
+    assert (
+        market_open_blackout(
+            tue,
+            enabled=True,
+            open_time="01:05",
+            tz_name="Europe/Bucharest",
+            minutes=15,
+            weekdays=["0"],
+        )
+        is None
+    )
+    # Monday still blocked
+    mon = _at_bucharest(1, 10, day=3, month=8, year=2026)
+    assert (
+        market_open_blackout(
+            mon,
+            enabled=True,
+            open_time="01:05",
+            tz_name="Europe/Bucharest",
+            minutes=15,
+            weekdays=["0"],
+        )
+        is not None
+    )
+
+
+def test_config_default_is_monday_only():
+    from factor import config
+
+    assert config.MARKET_OPEN_WEEKDAYS == ["0"]

@@ -71,6 +71,7 @@ openssl rand -hex 24
 | `MARKET_OPEN_TIME` | `01:05` (local wall clock in `MARKET_OPEN_TZ`) |
 | `MARKET_OPEN_TZ` | `Europe/Bucharest` |
 | `MARKET_OPEN_BLACKOUT_MINUTES` | `15` |
+| `MARKET_OPEN_WEEKDAYS` | `0` = Monday only (default). `0,1,2,3,4,5,6` = every day |
 
 4. Deploy → open `https://factor-XXXX.onrender.com/api/health`  
    Expect `"ok": true`, `"webhook_configured": true`, `"reaktor_pull_configured": true`.
