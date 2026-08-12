@@ -448,6 +448,85 @@ def build_breakeven_order_detail(
 # ---------------------------------------------------------------------------
 
 
+def _sane_absolute_sl(
+    *,
+    side: str,
+    entry: float,
+    candidate: Optional[float],
+    fallback: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Prefer absolute SL prices near the market. Drop relative-protocol leftovers
+    (e.g. 1_000_000) that would make BUY look already better-than-BE.
+    """
+    for raw in (candidate, fallback):
+        if raw is None:
+            continue
+        try:
+            sl = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if sl <= 0:
+            continue
+        # Absolute XAU ~4k, FX ~1; relative protocol is price_dist * 100_000
+        if sl > max(abs(entry) * 5.0, 1e5):
+            continue
+        return sl
+    return None
+
+
+def _be_reason_key(reason: str) -> str:
+    """Collapse noisy reasons (not_yet fav=…) so we don't write every poll."""
+    r = (reason or "").strip()
+    if r.startswith("not_yet"):
+        return "not_yet"
+    if r.startswith("spot_failed"):
+        return "spot_failed"
+    if r.startswith("amend_failed"):
+        return "amend_failed"
+    if ":" in r:
+        return r.split(":", 1)[0]
+    return r
+
+
+def _persist_be_check(
+    order: Dict[str, Any],
+    *,
+    reason: str,
+    mark: Optional[float] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Write last BE poll diagnostics into order.detail (no schema change)."""
+    order_id = order.get("id")
+    if not order_id:
+        return
+    detail = dict(order.get("detail") or {}) if isinstance(order.get("detail"), dict) else {}
+    be = dict(detail.get("breakeven") or {}) if isinstance(detail.get("breakeven"), dict) else {}
+    key = _be_reason_key(reason)
+    prev_key = str(be.get("last_reason_key") or _be_reason_key(str(be.get("last_reason") or "")))
+    force = bool((extra or {}).get("force"))
+    # Avoid spamming Supabase when still the same skip class (e.g. not_yet)
+    if prev_key == key and not force:
+        return
+    be["last_reason"] = reason
+    be["last_reason_key"] = key
+    be["last_check_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if mark is not None:
+        be["last_mark"] = float(mark)
+    if extra:
+        for k, v in extra.items():
+            if k == "force":
+                continue
+            be[k] = v
+    detail["breakeven"] = be
+    try:
+        repos.update_order(str(order_id), detail=detail)
+        # Keep in-memory order in sync for later steps in same cycle
+        order["detail"] = detail
+    except Exception as e:
+        print(f"⚠️  BE last_check persist failed order={order_id}: {e}")
+
+
 def process_open_order_for_be(
     order: Dict[str, Any],
     *,
@@ -507,9 +586,16 @@ def process_open_order_for_be(
         return {"order_id": order_id, "action": "skip", "reason": "position_not_matched"}
 
     side = str(order.get("side") or pos.get("side") or "BUY")
-    entry = order.get("entry_price")
+    # Prefer live position VWAP/entry when present (alert price can differ from fill)
+    entry = None
+    pos_entry = pos.get("entry_price")
+    try:
+        if pos_entry is not None and float(pos_entry) > 0:
+            entry = float(pos_entry)
+    except (TypeError, ValueError):
+        entry = None
     if entry is None:
-        entry = pos.get("entry_price")
+        entry = order.get("entry_price")
     try:
         entry_f = float(entry)
     except (TypeError, ValueError):
@@ -528,15 +614,22 @@ def process_open_order_for_be(
             side=side, bid=float(spot["bid"]), ask=float(spot["ask"])
         )
     except Exception as e:
-        return {"order_id": order_id, "action": "skip", "reason": f"spot_failed:{e}"}
+        reason = f"spot_failed:{e}"
+        _persist_be_check(order, reason=reason)
+        return {"order_id": order_id, "action": "skip", "reason": reason}
 
     psz = _resolve_point_size(order, meta)
-    current_sl = pos.get("stop_loss")
-    if current_sl is None:
-        try:
-            current_sl = float(order["sl_price"]) if order.get("sl_price") is not None else None
-        except (TypeError, ValueError):
-            current_sl = None
+    order_sl = None
+    try:
+        order_sl = float(order["sl_price"]) if order.get("sl_price") is not None else None
+    except (TypeError, ValueError):
+        order_sl = None
+    current_sl = _sane_absolute_sl(
+        side=side,
+        entry=entry_f,
+        candidate=pos.get("stop_loss"),
+        fallback=order_sl,
+    )
 
     tp_price = order.get("tp_price")
     if tp_price is None:
@@ -555,6 +648,24 @@ def process_open_order_for_be(
         buffer_points=meta["buffer_points"],
     )
     if not ok or be_sl is None:
+        fav = favorable_distance(side=side, entry=entry_f, mark=mark)
+        tp_dist = tp_distance_price(
+            side=side,
+            entry=entry_f,
+            tp_price=float(tp_price) if tp_price is not None else None,
+            tp_points=float(meta["tp_points"]) if meta.get("tp_points") is not None else None,
+            point_size=psz,
+        )
+        _persist_be_check(
+            order,
+            reason=reason,
+            mark=mark,
+            extra={
+                "last_fav": round(fav, 5),
+                "last_trigger": round(tp_dist * float(meta["fraction"]), 5),
+                "entry_used": entry_f,
+            },
+        )
         return {"order_id": order_id, "action": "skip", "reason": reason, "mark": mark}
 
     # Keep existing TP when amending
@@ -578,6 +689,12 @@ def process_open_order_for_be(
         )
     except Exception as e:
         print(f"❌ BE amend failed order={order_id} pos={pos_id}: {e}")
+        _persist_be_check(
+            order,
+            reason=f"amend_failed:{e}",
+            mark=mark,
+            extra={"force": True, "be_sl_attempt": float(be_sl)},
+        )
         return {"order_id": order_id, "action": "error", "reason": str(e)}
 
     # Persist
@@ -592,10 +709,14 @@ def process_open_order_for_be(
             "mark_at_apply": mark,
             "position_id": int(pos_id),
             "reason": reason,
+            "last_reason": reason,
+            "last_check_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "last_mark": mark,
             "fraction": meta["fraction"],
             "buffer_points": meta["buffer_points"],
             "tp_points": meta.get("tp_points"),
             "point_size": psz,
+            "entry_used": entry_f,
         }
     )
     detail["breakeven"] = be
@@ -684,32 +805,38 @@ def run_breakeven_cycle() -> Dict[str, Any]:
             out["errors"] += 1
             continue
 
+        # One WebSocket per user per cycle: list + spot + amend
         try:
-            positions = broker.list_open_positions_info()
-        except Exception as e:
-            print(f"⚠️  BE list positions {uid[:8]}: {e}")
-            out["errors"] += 1
-            continue
-
-        for order in orders:
-            out["checked"] += 1
-            try:
-                r = process_open_order_for_be(
-                    order,
-                    broker=broker,
-                    positions=positions,
-                    be_enabled_global=be_global,
-                )
-                out["results"].append(r)
-                if r.get("action") == "moved":
-                    out["moved"] += 1
-                elif r.get("action") == "closed_local":
-                    out["closed"] += 1
-                elif r.get("action") == "error":
+            with broker.session() as session:
+                try:
+                    positions = session.list_open_positions_info()
+                except Exception as e:
+                    print(f"⚠️  BE list positions {uid[:8]}: {e}")
                     out["errors"] += 1
-            except Exception as e:
-                out["errors"] += 1
-                print(f"⚠️  BE process order failed: {e}")
+                    continue
+
+                for order in orders:
+                    out["checked"] += 1
+                    try:
+                        r = process_open_order_for_be(
+                            order,
+                            broker=session,
+                            positions=positions,
+                            be_enabled_global=be_global,
+                        )
+                        out["results"].append(r)
+                        if r.get("action") == "moved":
+                            out["moved"] += 1
+                        elif r.get("action") == "closed_local":
+                            out["closed"] += 1
+                        elif r.get("action") == "error":
+                            out["errors"] += 1
+                    except Exception as e:
+                        out["errors"] += 1
+                        print(f"⚠️  BE process order failed: {e}")
+        except Exception as e:
+            print(f"⚠️  BE session run {uid[:8]}: {e}")
+            out["errors"] += 1
 
     return out
 

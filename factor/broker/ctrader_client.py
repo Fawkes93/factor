@@ -31,14 +31,18 @@ PT_RECONCILE_RES = 2125
 PT_EXECUTION_EVENT = 2126
 PT_SUBSCRIBE_SPOTS_REQ = 2127
 PT_SUBSCRIBE_SPOTS_RES = 2128
-PT_SPOT_EVENT = 2129
-PT_UNSUBSCRIBE_SPOTS_REQ = 2130
+PT_UNSUBSCRIBE_SPOTS_REQ = 2129
+PT_UNSUBSCRIBE_SPOTS_RES = 2130
+# Spotware: PROTO_OA_SPOT_EVENT = 2131 (was wrongly 2129 = unsubscribe req)
+PT_SPOT_EVENT = 2131
 PT_ORDER_ERROR_EVENT = 2132
 PT_DEAL_LIST_REQ = 2133
 PT_DEAL_LIST_RES = 2134
 PT_ERROR_RES = 2142
 PT_DEAL_LIST_BY_POSITION_ID_REQ = 2179
 PT_DEAL_LIST_BY_POSITION_ID_RES = 2180
+PT_GET_POSITION_UNREALIZED_PNL_REQ = 2187
+PT_GET_POSITION_UNREALIZED_PNL_RES = 2188
 PT_HEARTBEAT = 51  # ProtoHeartbeatEvent (common)
 
 # ProtoOAPositionStatus
@@ -268,13 +272,30 @@ class CTraderClient:
             raise CTraderError(f"amend SL/TP rejected: {body}")
         return body
 
+    @staticmethod
+    def _normalize_spot_quote(raw: Any) -> Optional[float]:
+        """
+        ProtoOASpotEvent bid/ask are often uint64 in 1/100000 of price
+        (e.g. 433952000 → 4339.52). Already-decimal prices pass through.
+        """
+        if raw is None:
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return None
+        # Scaled protocol ints are large; absolute gold ~4k, FX ~1.
+        if v >= 1_000_000.0:
+            v = v / 100_000.0
+        return v
+
     def get_spot(self, broker_symbol: str) -> Dict[str, float]:
         """
-        Subscribe to spots, wait for one ProtoOASpotEvent, unsubscribe.
+        Subscribe to spots, wait for one ProtoOASpotEvent (2131), unsubscribe.
         Returns {bid, ask, symbol_id}.
         """
         symbol_id = self.resolve_symbol_id(broker_symbol)
-        # Subscribe
+        # Subscribe — RES (2128) then technical SPOT_EVENT (2131) with latest price
         sub = self._request(
             PT_SUBSCRIBE_SPOTS_REQ,
             {
@@ -287,7 +308,7 @@ class CTraderClient:
         if pt == PT_ERROR_RES:
             raise CTraderError(f"subscribe spots failed: {sub.get('payload') or sub}")
 
-        # If subscribe response wasn't the spot, wait for spot event
+        # If subscribe response wasn't the spot, wait for spot event (2131)
         spot_msg = sub if pt == PT_SPOT_EVENT else self._wait_payload(
             wanted={PT_SPOT_EVENT, PT_ERROR_RES},
             timeout_sec=min(10.0, self.timeout_sec),
@@ -297,23 +318,19 @@ class CTraderClient:
         body = spot_msg.get("payload") or {}
         bid = body.get("bid")
         ask = body.get("ask")
-        # Some builds use bid/ask as ints with digits
-        if bid is None and body.get("bid") is None:
-            # try nested
+        if bid is None:
             bid = body.get("bidPrice") or body.get("b")
         if ask is None:
             ask = body.get("askPrice") or body.get("a")
-        try:
-            bid_f = float(bid)
-            ask_f = float(ask)
-        except (TypeError, ValueError) as e:
-            raise CTraderError(f"spot missing bid/ask: {body}") from e
-        # cTrader sometimes sends bid/ask in 1/100000 of price for some feeds —
-        # if values look like relative (huge ints for FX), leave as-is when already
-        # price-like. Gold ~2000, EUR ~1.1 — if bid > 1e6 scale down by 100000.
-        if bid_f > 1e6 and ask_f > 1e6:
-            bid_f /= 100_000.0
-            ask_f /= 100_000.0
+        bid_f = self._normalize_spot_quote(bid)
+        ask_f = self._normalize_spot_quote(ask)
+        # One-sided quotes: mirror so BE mark still works
+        if bid_f is None and ask_f is not None:
+            bid_f = ask_f
+        if ask_f is None and bid_f is not None:
+            ask_f = bid_f
+        if bid_f is None or ask_f is None:
+            raise CTraderError(f"spot missing bid/ask: {body}")
         try:
             self._request(
                 PT_UNSUBSCRIBE_SPOTS_REQ,
@@ -321,7 +338,11 @@ class CTraderClient:
                     "ctidTraderAccountId": self.account_id,
                     "symbolId": [int(symbol_id)],
                 },
-                expect_any=(PT_SUBSCRIBE_SPOTS_RES, PT_ERROR_RES, PT_SPOT_EVENT),
+                expect_any=(
+                    PT_UNSUBSCRIBE_SPOTS_RES,
+                    PT_ERROR_RES,
+                    PT_SPOT_EVENT,
+                ),
             )
         except CTraderError:
             pass  # best-effort unsubscribe

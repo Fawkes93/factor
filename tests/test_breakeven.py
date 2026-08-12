@@ -315,3 +315,150 @@ def test_process_be_applied_skip_when_still_open(monkeypatch):
     r = process_open_order_for_be(order, broker=FakeBroker(), positions=positions)
     assert r["action"] == "skip"
     assert r["reason"] == "already_applied"
+
+
+def test_process_be_moves_sl_when_half_tp_hit(monkeypatch):
+    """Full path: open position + spot past half TP → amend + applied."""
+    from factor.db import repos
+
+    updated = {}
+
+    def fake_update(oid, **fields):
+        updated["id"] = oid
+        updated.update(fields)
+        return {"id": oid, **fields}
+
+    monkeypatch.setattr(repos, "update_order", fake_update)
+
+    amends = []
+
+    class FakeBroker:
+        _dry_run = False
+
+        def list_open_positions_info(self):
+            return []
+
+        def get_spot(self, sym):
+            assert sym == "XAUUSD"
+            return {"bid": 2005.0, "ask": 2005.2}
+
+        def amend_position_sl_tp(self, *, position_id, stop_loss, take_profit):
+            amends.append(
+                {
+                    "position_id": position_id,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                }
+            )
+            return {"ok": True}
+
+    order = {
+        "id": "ord-move",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "broker_position_id": "42",
+        "entry_price": 2000.0,
+        "tp_price": 2010.0,
+        "sl_price": 1990.0,
+        "detail": {
+            "breakeven": {
+                "enabled": True,
+                "applied": False,
+                "fraction": 0.5,
+                "tp_points": 1000,
+                "sl_points": 1000,
+                "point_size": 0.01,
+            },
+            "broker_detail": {
+                "plan": {
+                    "broker_symbol": "XAUUSD",
+                    "tp_points": 1000,
+                    "sl_points": 1000,
+                    "point_size": 0.01,
+                }
+            },
+        },
+    }
+    positions = [
+        {
+            "position_id": 42,
+            "side": "BUY",
+            "entry_price": 2000.0,
+            "stop_loss": 1990.0,
+            "take_profit": 2010.0,
+            "broker_symbol": "XAUUSD",
+        }
+    ]
+    r = process_open_order_for_be(order, broker=FakeBroker(), positions=positions)
+    assert r["action"] == "moved"
+    assert r["be_sl"] == 2000.0
+    assert len(amends) == 1
+    assert amends[0]["stop_loss"] == 2000.0
+    assert amends[0]["take_profit"] == 2010.0
+    assert updated.get("sl_price") == 2000.0
+    assert updated["detail"]["breakeven"]["applied"] is True
+
+
+def test_process_be_skips_before_half_and_records_reason(monkeypatch):
+    from factor.db import repos
+
+    updated = {}
+    monkeypatch.setattr(
+        repos,
+        "update_order",
+        lambda oid, **fields: updated.update({"id": oid, **fields}) or {"id": oid, **fields},
+    )
+
+    class FakeBroker:
+        _dry_run = False
+
+        def get_spot(self, sym):
+            return {"bid": 2002.0, "ask": 2002.1}
+
+    order = {
+        "id": "ord-early",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "broker_position_id": "7",
+        "entry_price": 2000.0,
+        "tp_price": 2010.0,
+        "sl_price": 1990.0,
+        "detail": {
+            "breakeven": {
+                "enabled": True,
+                "applied": False,
+                "fraction": 0.5,
+                "tp_points": 1000,
+                "point_size": 0.01,
+            }
+        },
+    }
+    positions = [
+        {
+            "position_id": 7,
+            "side": "BUY",
+            "entry_price": 2000.0,
+            "stop_loss": 1990.0,
+            "take_profit": 2010.0,
+            "broker_symbol": "XAUUSD",
+        }
+    ]
+    r = process_open_order_for_be(order, broker=FakeBroker(), positions=positions)
+    assert r["action"] == "skip"
+    assert "not_yet" in r["reason"]
+    assert updated["detail"]["breakeven"]["last_reason_key"] == "not_yet"
+
+
+def test_sane_absolute_sl_drops_relative_protocol():
+    from factor.services.breakeven import _sane_absolute_sl
+
+    # relative 1000 pts * 100_000 = 1_000_000 must not block BE
+    assert (
+        _sane_absolute_sl(
+            side="BUY", entry=2000.0, candidate=1_000_000.0, fallback=1990.0
+        )
+        == 1990.0
+    )
+    assert _sane_absolute_sl(side="BUY", entry=2000.0, candidate=1990.0) == 1990.0

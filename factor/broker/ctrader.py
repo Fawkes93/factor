@@ -10,7 +10,8 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 
 from factor import config
 from factor.broker.base import OrderResult
@@ -253,6 +254,35 @@ class CTraderBroker:
             detail=detail,
         )
 
+    def _new_client(self) -> CTraderClient:
+        return CTraderClient(
+            host=self._host,
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            access_token=self._access_token,
+            account_id=int(self._account_id),
+        )
+
+    @contextmanager
+    def session(self) -> Iterator[Any]:
+        """
+        One authenticated WebSocket for multiple ops (list + spot + amend).
+
+        Yields a lightweight facade with the same BE methods as this broker.
+        Prefer this in the breakeven poll to avoid 3 reconnects per order.
+        """
+        if not self.configured():
+            raise CTraderError("cTrader not configured")
+        if self._dry_run:
+            yield _DryRunSession()
+            return
+        with self._lock:
+            with self._new_client() as client:
+                yield _LiveSession(client, on_amend=self._bump_open_cache)
+
+    def _bump_open_cache(self) -> None:
+        self._open_cache_at = 0.0
+
     def list_open_positions_info(self) -> list:
         """Normalized open positions (entry, SL, TP, side, symbol)."""
         if not self.configured():
@@ -260,13 +290,7 @@ class CTraderBroker:
         if self._dry_run:
             return []
         with self._lock:
-            with CTraderClient(
-                host=self._host,
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                access_token=self._access_token,
-                account_id=int(self._account_id),
-            ) as client:
+            with self._new_client() as client:
                 return client.list_open_positions_info()
 
     def position_close_outcome(
@@ -283,13 +307,7 @@ class CTraderBroker:
         if not self.configured() or self._dry_run:
             return {"result": RESULT_UNKNOWN, "close_deals": 0, "reason": "dry_or_unconfigured"}
         with self._lock:
-            with CTraderClient(
-                host=self._host,
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                access_token=self._access_token,
-                account_id=int(self._account_id),
-            ) as client:
+            with self._new_client() as client:
                 deals = client.list_deals_by_position_id(
                     int(position_id),
                     from_timestamp_ms=from_timestamp_ms,
@@ -305,13 +323,7 @@ class CTraderBroker:
             # No live feed — caller should skip BE in dry_run
             raise CTraderError("dry_run has no spots")
         with self._lock:
-            with CTraderClient(
-                host=self._host,
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                access_token=self._access_token,
-                account_id=int(self._account_id),
-            ) as client:
+            with self._new_client() as client:
                 return client.get_spot(broker_symbol)
 
     def amend_position_sl_tp(
@@ -335,20 +347,98 @@ class CTraderBroker:
                 "take_profit": take_profit,
             }
         with self._lock:
-            with CTraderClient(
-                host=self._host,
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                access_token=self._access_token,
-                account_id=int(self._account_id),
-            ) as client:
+            with self._new_client() as client:
                 body = client.amend_position_sl_tp(
                     position_id=position_id,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                 )
-            self._open_cache_at = 0.0
+            self._bump_open_cache()
             return body
+
+
+class _DryRunSession:
+    """Facade matching BE broker methods when CTRADER_DRY_RUN is on."""
+
+    _dry_run = True
+
+    def list_open_positions_info(self) -> list:
+        return []
+
+    def get_spot(self, broker_symbol: str) -> Dict[str, float]:
+        raise CTraderError("dry_run has no spots")
+
+    def amend_position_sl_tp(
+        self,
+        *,
+        position_id: int,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "dry_run": True,
+            "position_id": position_id,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+        }
+
+    def position_close_outcome(
+        self,
+        position_id: int,
+        *,
+        from_timestamp_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        from factor.services.outcome import RESULT_UNKNOWN
+
+        return {"result": RESULT_UNKNOWN, "close_deals": 0, "reason": "dry_or_unconfigured"}
+
+
+class _LiveSession:
+    """Wrap an open CTraderClient so BE can list/spot/amend without reconnecting."""
+
+    _dry_run = False
+
+    def __init__(self, client: CTraderClient, *, on_amend: Optional[Any] = None) -> None:
+        self._client = client
+        self._on_amend = on_amend
+
+    def list_open_positions_info(self) -> list:
+        return self._client.list_open_positions_info()
+
+    def get_spot(self, broker_symbol: str) -> Dict[str, float]:
+        return self._client.get_spot(broker_symbol)
+
+    def amend_position_sl_tp(
+        self,
+        *,
+        position_id: int,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        body = self._client.amend_position_sl_tp(
+            position_id=position_id,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+        if self._on_amend:
+            self._on_amend()
+        return body
+
+    def position_close_outcome(
+        self,
+        position_id: int,
+        *,
+        from_timestamp_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        from factor.services.outcome import summarize_close_deals
+
+        deals = self._client.list_deals_by_position_id(
+            int(position_id),
+            from_timestamp_ms=from_timestamp_ms,
+        )
+        out = summarize_close_deals(deals)
+        out["position_id"] = int(position_id)
+        return out
 
 
 def broker_from_connection(
