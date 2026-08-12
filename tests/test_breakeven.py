@@ -33,6 +33,35 @@ def test_tp_distance_from_price_or_points():
     )
 
 
+def test_tp_distance_prefers_points_over_absolute_price():
+    """Fill entry + alert absolute TP must not inflate trigger (live bug)."""
+    # fill 4404.14, alert TP 4415.28 → abs dist ~11.14; points say 10.0
+    assert (
+        tp_distance_price(
+            side="BUY",
+            entry=4404.14,
+            tp_price=4415.28634,
+            tp_points=1000,
+            point_size=0.01,
+        )
+        == 10.0
+    )
+    # Half of 10 = 5; should_move at mark fill+5.3
+    ok, be, reason = should_move_to_breakeven(
+        side="BUY",
+        entry=4404.14,
+        mark=4409.44,
+        tp_price=4415.28634,
+        tp_points=1000,
+        point_size=0.01,
+        fraction=0.5,
+        current_sl=4394.14,
+    )
+    assert ok is True
+    assert be == 4404.14
+    assert "trigger" in reason
+
+
 def test_breakeven_sl_with_buffer():
     assert breakeven_sl_price(side="BUY", entry=2000.0) == 2000.0
     assert breakeven_sl_price(

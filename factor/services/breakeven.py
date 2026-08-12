@@ -54,13 +54,19 @@ def tp_distance_price(
     tp_points: Optional[float] = None,
     point_size: Optional[float] = None,
 ) -> float:
-    """Absolute price distance from entry to TP."""
-    if tp_price is not None and float(tp_price) > 0:
-        return abs(float(tp_price) - float(entry))
+    """
+    Absolute price distance from entry to TP.
+
+    Prefer tp_points × point_size when set — that is the planned risk distance.
+    Absolute tp_price − entry is wrong when entry is the cTrader fill but tp_price
+    still comes from the alert plan (fill skew inflates the half-TP trigger).
+    """
     pts = float(tp_points or 0)
     psz = float(point_size or 0)
     if pts > 0 and psz > 0:
         return pts * psz
+    if tp_price is not None and float(tp_price) > 0:
+        return abs(float(tp_price) - float(entry))
     return 0.0
 
 
