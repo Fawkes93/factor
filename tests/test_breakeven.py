@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+from factor.rules.presets import price_decimals, round_price
 from factor.services.breakeven import (
     breakeven_sl_price,
     build_breakeven_order_detail,
@@ -491,3 +492,65 @@ def test_sane_absolute_sl_drops_relative_protocol():
         == 1990.0
     )
     assert _sane_absolute_sl(side="BUY", entry=2000.0, candidate=1990.0) == 1990.0
+
+
+def test_round_price_matches_symbol_digits():
+    assert price_decimals(0.01) == 2
+    assert price_decimals(0.00001) == 5
+    assert price_decimals(1.0) == 0
+    # Live 902 failure: alert TP had too many digits for XAU
+    assert round_price(4415.28634, 0.01) == 4415.29
+    assert round_price(4404.14, 0.01) == 4404.14
+
+
+def test_process_be_rounds_tp_on_amend(monkeypatch):
+    """Regression: unrounded alert TP caused TRADING_BAD_STOPS on amend."""
+    from factor.db import repos
+
+    amends = []
+    monkeypatch.setattr(repos, "update_order", lambda oid, **f: {"id": oid, **f})
+
+    class FakeBroker:
+        _dry_run = False
+
+        def get_spot(self, sym):
+            return {"bid": 2005.0, "ask": 2005.1}
+
+        def amend_position_sl_tp(self, *, position_id, stop_loss, take_profit):
+            amends.append({"sl": stop_loss, "tp": take_profit})
+            return {"ok": True}
+
+    order = {
+        "id": "ord-digits",
+        "kind": "candle",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "broker_position_id": "1",
+        "entry_price": 2000.12345,
+        "tp_price": 2010.12345678,
+        "sl_price": 1990.0,
+        "detail": {
+            "breakeven": {
+                "enabled": True,
+                "applied": False,
+                "fraction": 0.5,
+                "tp_points": 1000,
+                "point_size": 0.01,
+            }
+        },
+    }
+    positions = [
+        {
+            "position_id": 1,
+            "side": "BUY",
+            "entry_price": 2000.0,
+            "stop_loss": 1990.0,
+            # no live TP — fall back to order tp_price (must be rounded)
+            "take_profit": None,
+            "broker_symbol": "XAUUSD",
+        }
+    ]
+    r = process_open_order_for_be(order, broker=FakeBroker(), positions=positions)
+    assert r["action"] == "moved"
+    assert amends[0]["sl"] == 2000.0
+    assert amends[0]["tp"] == 2010.12  # rounded to 2 digits, not 2010.12345678

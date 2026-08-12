@@ -7,11 +7,33 @@ MT-style points (same as Reaktor):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from factor import config
 from factor.inbound.models import AlertData
+
+
+def price_decimals(point_size: float) -> int:
+    """
+    Decimal places for absolute prices from MT-style point_size.
+    0.01 → 2 (XAU), 0.00001 → 5 (EUR), 1.0 → 0 (BTC).
+    """
+    try:
+        psz = float(point_size)
+    except (TypeError, ValueError):
+        return 5
+    if psz <= 0:
+        return 5
+    if psz >= 1.0:
+        return 0
+    return max(0, min(8, int(round(-math.log10(psz)))))
+
+
+def round_price(price: float, point_size: float = 0.01) -> float:
+    """Round absolute price to symbol digits (cTrader TRADING_BAD_STOPS)."""
+    return round(float(price), price_decimals(point_size))
 
 
 @dataclass

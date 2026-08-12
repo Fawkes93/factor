@@ -19,7 +19,7 @@ from factor.broker.ctrader import broker_from_connection
 from factor.crypto.tokens import decrypt_token
 from factor.db import repos
 from factor.db.client import supabase_configured
-from factor.rules.presets import resolve_preset
+from factor.rules.presets import resolve_preset, round_price
 from factor.services.outcome import RESULT_UNKNOWN
 
 _be_stop = threading.Event()
@@ -674,24 +674,29 @@ def process_open_order_for_be(
         )
         return {"order_id": order_id, "action": "skip", "reason": reason, "mark": mark}
 
-    # Keep existing TP when amending
+    # Keep existing TP when amending — prefer live position TP (already valid digits)
     tp_keep = None
-    if tp_price is not None:
-        try:
-            tp_keep = float(tp_price)
-        except (TypeError, ValueError):
-            tp_keep = None
-    if tp_keep is None and pos.get("take_profit") is not None:
+    if pos.get("take_profit") is not None:
         try:
             tp_keep = float(pos["take_profit"])
         except (TypeError, ValueError):
             tp_keep = None
+    if tp_keep is None and tp_price is not None:
+        try:
+            tp_keep = float(tp_price)
+        except (TypeError, ValueError):
+            tp_keep = None
+
+    # cTrader rejects protection prices with more digits than the symbol allows
+    # (alert TP like 4415.28634 on XAU → TRADING_BAD_STOPS, Allowed 2 digits).
+    be_sl_r = round_price(float(be_sl), psz)
+    tp_keep_r = round_price(tp_keep, psz) if tp_keep is not None else None
 
     try:
         amend = broker.amend_position_sl_tp(
             position_id=int(pos_id),
-            stop_loss=float(be_sl),
-            take_profit=tp_keep,
+            stop_loss=be_sl_r,
+            take_profit=tp_keep_r,
         )
     except Exception as e:
         print(f"❌ BE amend failed order={order_id} pos={pos_id}: {e}")
@@ -699,7 +704,11 @@ def process_open_order_for_be(
             order,
             reason=f"amend_failed:{e}",
             mark=mark,
-            extra={"force": True, "be_sl_attempt": float(be_sl)},
+            extra={
+                "force": True,
+                "be_sl_attempt": be_sl_r,
+                "tp_keep_attempt": tp_keep_r,
+            },
         )
         return {"order_id": order_id, "action": "error", "reason": str(e)}
 
@@ -711,7 +720,7 @@ def process_open_order_for_be(
             "enabled": True,
             "applied": True,
             "applied_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "be_sl": float(be_sl),
+            "be_sl": float(be_sl_r),
             "mark_at_apply": mark,
             "position_id": int(pos_id),
             "reason": reason,
@@ -729,7 +738,7 @@ def process_open_order_for_be(
     try:
         repos.update_order(
             str(order_id),
-            sl_price=float(be_sl),
+            sl_price=float(be_sl_r),
             broker_position_id=str(pos_id),
             detail=detail,
         )
@@ -738,12 +747,12 @@ def process_open_order_for_be(
 
     print(
         f"🛡️  BE applied order={str(order_id)[:8]} pos={pos_id} "
-        f"{side} {order.get('symbol')} SL→{be_sl} mark={mark} ({reason})"
+        f"{side} {order.get('symbol')} SL→{be_sl_r} mark={mark} ({reason})"
     )
     return {
         "order_id": order_id,
         "action": "moved",
-        "be_sl": be_sl,
+        "be_sl": be_sl_r,
         "mark": mark,
         "position_id": pos_id,
         "reason": reason,
