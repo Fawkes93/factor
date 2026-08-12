@@ -173,6 +173,7 @@ const ALERT_KINDS = [
   { id: "candle", label: "Range (candle)" },
   { id: "spike", label: "Spike" },
   { id: "spike_neo", label: "Spike Neo" },
+  { id: "impulse_retrace", label: "Impulse retrace" },
 ];
 
 /**
@@ -193,6 +194,7 @@ let prefsSaving = false;
 function newPref(kind = "candle") {
   // Spike-family defaults match typical tighter stops (editable after add)
   const spikeLike = kind === "spike" || kind === "spike_neo";
+  // Continuation after pullback — same risk shell as range by default
   return {
     kind,
     symbol: ALERT_SYMBOLS[0].id,
@@ -323,7 +325,7 @@ function renderPrefs() {
     root.innerHTML = `
       <div class="prefs-empty">
         <p class="muted">No alerts configured yet.</p>
-        <p class="muted small">Add a Range (candle), Spike, or Spike Neo alert, set lots / SL / TP / caps, then Save.</p>
+        <p class="muted small">Add Range, Spike, Spike Neo, or Impulse retrace — set lots / SL / TP / caps, then Save.</p>
         <button type="button" class="btn primary" id="btn-add-pref-empty">+ Add alert</button>
       </div>`;
     // Hide bottom add when empty — primary CTA is inside empty state
