@@ -41,17 +41,18 @@ def get_user_by_ctid(ctrader_ctid: str) -> Optional[Dict[str, Any]]:
     return res.data[0] if res.data else None
 
 
-def find_user_for_accounts(
+def find_users_for_accounts(
     account_ids: List[int],
     trader_logins: Optional[List[str]] = None,
-) -> Optional[Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """
-    Resolve an existing Factor user from granted cTrader accounts.
+    All Factor users that own any of these cTrader accounts / trader logins.
 
-    Match order: any stored connection.account_id, then users.ctrader_ctid
-    against traderLogin values (legacy 1:1 identity).
+    Pre-multi-account logins created one user per trading account. A later
+    grant of all accounts must merge those rows or prefs stay invisible.
     """
     sb = get_supabase()
+    found: Dict[str, Dict[str, Any]] = {}
     ids = []
     for raw in account_ids or []:
         try:
@@ -63,20 +64,123 @@ def find_user_for_accounts(
             sb.table(T_CONN)
             .select("user_id")
             .in_("account_id", ids)
-            .limit(1)
             .execute()
         )
-        if res.data:
-            user = get_user(str(res.data[0]["user_id"]))
+        for row in res.data or []:
+            uid = str(row.get("user_id") or "")
+            if not uid or uid in found:
+                continue
+            user = get_user(uid)
             if user:
-                return user
+                found[uid] = user
     for login in trader_logins or []:
         if not login:
             continue
         user = get_user_by_ctid(str(login))
         if user:
-            return user
-    return None
+            found[str(user["id"])] = user
+    out = list(found.values())
+    out.sort(key=lambda u: str(u.get("created_at") or ""))
+    return out
+
+
+def find_user_for_accounts(
+    account_ids: List[int],
+    trader_logins: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    users = find_users_for_accounts(account_ids, trader_logins)
+    return users[0] if users else None
+
+
+def merge_user_into(source_id: str, dest_id: str) -> None:
+    """
+    Move connections, prefs, orders, and claims from source_id onto dest_id,
+    then delete the source user. No-op if ids match or source is gone.
+    """
+    if not source_id or not dest_id or str(source_id) == str(dest_id):
+        return
+    source = get_user(source_id)
+    dest = get_user(dest_id)
+    if not source or not dest:
+        return
+    sb = get_supabase()
+    dest_id = str(dest["id"])
+    source_id = str(source["id"])
+
+    dest_account_ids = {
+        int(c["account_id"])
+        for c in list_connections(dest_id)
+        if c.get("account_id") is not None
+    }
+    src_conns = list_connections(source_id)
+    fallback_aid = None
+    if len(src_conns) == 1 and src_conns[0].get("account_id") is not None:
+        fallback_aid = int(src_conns[0]["account_id"])
+
+    for conn in src_conns:
+        aid = int(conn["account_id"]) if conn.get("account_id") is not None else None
+        if aid is not None and aid in dest_account_ids:
+            delete_connection(source_id, aid)
+        else:
+            sb.table(T_CONN).update({"user_id": dest_id}).eq("id", conn["id"]).execute()
+            if aid is not None:
+                dest_account_ids.add(aid)
+
+    dest_pref_keys = {
+        (int(p.get("account_id") or 0), str(p.get("kind") or ""), str(p.get("symbol") or ""))
+        for p in list_prefs(dest_id)
+    }
+    for pref in list_prefs(source_id):
+        raw_aid = pref.get("account_id")
+        try:
+            aid = int(raw_aid) if raw_aid is not None else 0
+        except (TypeError, ValueError):
+            aid = 0
+        if aid == 0 and fallback_aid is not None:
+            aid = fallback_aid
+        key = (aid, str(pref.get("kind") or ""), str(pref.get("symbol") or ""))
+        if key in dest_pref_keys:
+            sb.table(T_PREFS).delete().eq("id", pref["id"]).execute()
+            continue
+        patch: Dict[str, Any] = {"user_id": dest_id}
+        if int(pref.get("account_id") or 0) != aid:
+            patch["account_id"] = aid
+        sb.table(T_PREFS).update(patch).eq("id", pref["id"]).execute()
+        dest_pref_keys.add(key)
+
+    try:
+        sb.table(T_ORDERS).update({"user_id": dest_id}).eq("user_id", source_id).execute()
+    except Exception as e:
+        print(f"⚠️  merge orders {source_id[:8]}→{dest_id[:8]}: {e}")
+
+    try:
+        sb.table(T_PROCESSED).delete().eq("user_id", source_id).execute()
+    except Exception as e:
+        print(f"⚠️  merge claims {source_id[:8]}: {e}")
+
+    sb.table(T_USERS).delete().eq("id", source_id).execute()
+    print(f"🔗 Merged Factor user {source_id[:8]} into {dest_id[:8]}")
+
+
+def adopt_legacy_users(user_id: str) -> int:
+    """
+    Fold leftover 1-account Factor users into this user when they share
+    a cTrader account id or trader login.
+    """
+    conns = list_connections(user_id)
+    account_ids = [
+        int(c["account_id"]) for c in conns if c.get("account_id") is not None
+    ]
+    logins = [str(c["trader_login"]) for c in conns if c.get("trader_login")]
+    others = find_users_for_accounts(account_ids, logins)
+    n = 0
+    for other in others:
+        oid = str(other["id"])
+        if oid == str(user_id):
+            continue
+        merge_user_into(oid, str(user_id))
+        n += 1
+    return n
 
 
 def get_or_create_user_for_accounts(

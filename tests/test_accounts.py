@@ -273,3 +273,88 @@ def test_account_label_and_public_connection():
     assert "access_token_enc" not in pub
     assert pub["label"] == "Raw Trading Ltd · Live · 6168349"
     assert pub["is_live"] is True
+
+
+def test_adopt_legacy_users_moves_prefs(monkeypatch):
+    """Old 1-account user keeps prefs; session user already has the same account."""
+    fake = _FakeSB()
+    repos = _wire(monkeypatch, fake)
+    dest = str(uuid4())
+    src = str(uuid4())
+    fake.tables["factor_users"] = [
+        {"id": dest, "ctrader_ctid": "6168349", "created_at": "2026-01-01T00:00:00Z"},
+        {"id": src, "ctrader_ctid": "10093658", "created_at": "2026-01-02T00:00:00Z"},
+    ]
+    fake.tables["factor_ctrader_connections"] = [
+        {
+            "id": str(uuid4()),
+            "user_id": dest,
+            "account_id": 10,
+            "host": "demo.ctraderapi.com",
+            "trader_login": "10093658",
+        },
+        {
+            "id": str(uuid4()),
+            "user_id": dest,
+            "account_id": 12,
+            "host": "live.ctraderapi.com",
+            "trader_login": "6168349",
+        },
+        {
+            "id": str(uuid4()),
+            "user_id": src,
+            "account_id": 10,
+            "host": "demo.ctraderapi.com",
+            "trader_login": "10093658",
+        },
+    ]
+    fake.tables["factor_user_alert_prefs"] = [
+        {
+            "id": str(uuid4()),
+            "user_id": src,
+            "account_id": 10,
+            "kind": "candle",
+            "symbol": "XAU/USD",
+            "enabled": True,
+        }
+    ]
+
+    n = repos.adopt_legacy_users(dest)
+    assert n == 1
+    assert repos.get_user(src) is None
+    prefs = repos.list_prefs(dest, 10)
+    assert len(prefs) == 1
+    assert prefs[0]["kind"] == "candle"
+    assert prefs[0]["user_id"] == dest
+    # dest still has both accounts; leftover src connection is gone
+    assert {int(c["account_id"]) for c in repos.list_connections(dest)} == {10, 12}
+
+
+def test_merge_rewrites_account_id_zero_prefs(monkeypatch):
+    fake = _FakeSB()
+    repos = _wire(monkeypatch, fake)
+    dest = str(uuid4())
+    src = str(uuid4())
+    fake.tables["factor_users"] = [
+        {"id": dest, "created_at": "a"},
+        {"id": src, "created_at": "b"},
+    ]
+    fake.tables["factor_ctrader_connections"] = [
+        {"id": str(uuid4()), "user_id": dest, "account_id": 10},
+        {"id": str(uuid4()), "user_id": src, "account_id": 10},
+    ]
+    fake.tables["factor_user_alert_prefs"] = [
+        {
+            "id": str(uuid4()),
+            "user_id": src,
+            "account_id": 0,
+            "kind": "spike",
+            "symbol": "XAU/USD",
+            "enabled": True,
+        }
+    ]
+    repos.merge_user_into(src, dest)
+    prefs = repos.list_prefs(dest, 10)
+    assert len(prefs) == 1
+    assert prefs[0]["kind"] == "spike"
+    assert int(prefs[0]["account_id"]) == 10

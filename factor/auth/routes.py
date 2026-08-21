@@ -103,6 +103,13 @@ def ctrader_callback(
             display_name=display,
         )
     user_id = user["id"]
+    # Fold leftover 1-account users (old OAuth created one user per login)
+    # so prefs/orders follow the accounts into this session.
+    for other in repos.find_users_for_accounts(
+        account_ids, [x for x in trader_logins if x]
+    ):
+        if str(other["id"]) != str(user_id):
+            repos.merge_user_into(str(other["id"]), str(user_id))
 
     access_enc = encrypt_token(access, config.FACTOR_TOKEN_ENC_KEY)
     refresh_enc = encrypt_token(refresh or access, config.FACTOR_TOKEN_ENC_KEY)
@@ -169,6 +176,11 @@ def me(request: Request):
     user = repos.get_user(uid)
     if not user:
         raise HTTPException(401, "user not found")
+    try:
+        repos.adopt_legacy_users(uid)
+        user = repos.get_user(uid) or user
+    except Exception as e:
+        print(f"⚠️  adopt_legacy_users: {e}")
     accounts = [repos.public_connection(c) for c in repos.list_connections(uid)]
     conn = _selected_connection(uid)
     safe_conn = repos.public_connection(conn)
