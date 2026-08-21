@@ -32,18 +32,20 @@ def test_activate_kill_closes_and_flags(monkeypatch):
     )
     monkeypatch.setattr(
         repos,
-        "set_kill_switch",
-        lambda u, v: {
-            "id": uid,
+        "set_account_kill_switch",
+        lambda u, a, v: {
+            "account_id": a,
             "kill_switch": v,
             "trading_enabled": not v,
+            "host": "demo.ctraderapi.com",
+            "access_token_enc": enc,
         },
     )
     monkeypatch.setattr(
         repos,
         "get_connection",
-        lambda u: {
-            "account_id": 1,
+        lambda u, a=None: {
+            "account_id": a or 1,
             "host": "demo.ctraderapi.com",
             "access_token_enc": enc,
         },
@@ -81,14 +83,23 @@ def test_resume(monkeypatch):
     )
     monkeypatch.setattr(
         repos,
-        "set_kill_switch",
-        lambda u, v: {
-            "id": uid,
+        "get_connection",
+        lambda u, a=None: {
+            "account_id": a or 1,
+            "kill_switch": True,
+            "trading_enabled": False,
+        },
+    )
+    monkeypatch.setattr(
+        repos,
+        "set_account_kill_switch",
+        lambda u, a, v: {
+            "account_id": a,
             "kill_switch": v,
             "trading_enabled": not v,
         },
     )
-    out = kill_svc.resume_trading(uid)
+    out = kill_svc.resume_trading(uid, 1)
     assert out["kill_switch"] is False
     assert out["trading_enabled"] is True
 

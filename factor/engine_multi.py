@@ -35,16 +35,19 @@ def process_alert_for_user(
     connection: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Handle one alert for one user.
+    Handle one alert for one trading account.
 
-    Claim-before-place on (user_id, alert_id). Caps from pref.
-    max_concurrent / max_per_day are per alert pref (kind + symbol).
+    Claim-before-place on (user_id, account_id, alert_id). Caps from pref.
+    max_concurrent / max_per_day are per alert pref (kind + symbol) on that account.
     """
     user_id = str(user["id"])
-    uid_short = user_id[:8]
+    account_id = int(connection["account_id"])
+    uid_short = f"{user_id[:8]}:{account_id}"
 
-    # 1) Claim de-dupe — same webhook never runs twice for this user
-    if not repos.claim_alert(user_id, alert.alert_id, reason="claimed"):
+    # 1) Claim de-dupe — same webhook never runs twice for this account
+    if not repos.claim_alert(
+        user_id, alert.alert_id, reason="claimed", account_id=account_id
+    ):
         print(
             f"⏭  [{uid_short}] skip alert_id={alert.alert_id} duplicate_alert_id"
         )
@@ -53,13 +56,17 @@ def process_alert_for_user(
             "reason": "duplicate_alert_id",
             "alert_id": alert.alert_id,
             "user_id": user_id,
+            "account_id": account_id,
         }
 
     def _skip(reason: str, status: str = "skipped") -> Dict[str, Any]:
-        repos.update_processed_reason(user_id, alert.alert_id, reason)
+        repos.update_processed_reason(
+            user_id, alert.alert_id, reason, account_id=account_id
+        )
         try:
             repos.insert_order(
                 user_id=user_id,
+                account_id=account_id,
                 reaktor_alert_id=alert.alert_id,
                 kind=alert.kind,
                 symbol=alert.symbol,
@@ -78,12 +85,17 @@ def process_alert_for_user(
             "reason": reason,
             "alert_id": alert.alert_id,
             "user_id": user_id,
+            "account_id": account_id,
         }
 
-    # 2) Kill / trading flags (candidates should already filter; belt)
-    if user.get("kill_switch"):
+    # 2) Kill / trading flags (account first; user-level is legacy fallback)
+    conn_killed = connection.get("kill_switch")
+    if conn_killed or (conn_killed is None and user.get("kill_switch")):
         return _skip("kill_switch")
-    if not user.get("trading_enabled", True):
+    conn_enabled = connection.get("trading_enabled")
+    if conn_enabled is False or (
+        conn_enabled is None and user.get("trading_enabled") is False
+    ):
         return _skip("trading_disabled")
 
     # 3) Direction / freshness
@@ -110,7 +122,10 @@ def process_alert_for_user(
     if max_day > 0:
         try:
             day_n = repos.count_orders_today(
-                user_id, kind=alert.kind, statuses=["open", "filled"]
+                user_id,
+                kind=alert.kind,
+                statuses=["open", "filled"],
+                account_id=account_id,
             )
         except Exception as e:
             print(f"⚠️  [{uid_short}] count_orders_today failed: {e}")
@@ -124,7 +139,7 @@ def process_alert_for_user(
         return _skip("max_concurrent_zero")
     try:
         open_n = repos.count_open_orders_db(
-            user_id, kind=alert.kind, symbol=alert.symbol
+            user_id, kind=alert.kind, symbol=alert.symbol, account_id=account_id
         )
     except Exception as e:
         print(f"⚠️  [{uid_short}] count_open_orders_db failed: {e}")
@@ -167,6 +182,7 @@ def process_alert_for_user(
     try:
         order_row = repos.insert_order(
             user_id=user_id,
+            account_id=account_id,
             reaktor_alert_id=alert.alert_id,
             kind=alert.kind,
             symbol=alert.symbol,
@@ -192,7 +208,9 @@ def process_alert_for_user(
         order_id = None
 
     reason = "traded" if result.ok else f"broker_fail:{result.message}"
-    repos.update_processed_reason(user_id, alert.alert_id, reason)
+    repos.update_processed_reason(
+        user_id, alert.alert_id, reason, account_id=account_id
+    )
 
     action = "traded" if result.ok else "broker_error"
     print(
@@ -204,6 +222,7 @@ def process_alert_for_user(
         "action": action,
         "alert_id": alert.alert_id,
         "user_id": user_id,
+        "account_id": account_id,
         "order_id": order_id,
         "plan": plan.as_dict(),
         "broker": {
@@ -217,7 +236,7 @@ def process_alert_for_user(
 
 def process_alert_multi(alert: AlertData) -> Dict[str, Any]:
     """
-    Fan-out one alert to all eligible users (sequential, 512MB-safe).
+    Fan-out one alert to all eligible trading accounts (sequential, 512MB-safe).
     """
     if not config.TRADING_ENABLED:
         print(f"⏭  fan-out skip alert_id={alert.alert_id}: trading_disabled")
@@ -255,7 +274,7 @@ def process_alert_multi(alert: AlertData) -> Dict[str, Any]:
 
     print(
         f"📣 Fan-out alert_id={alert.alert_id} {alert.kind} {alert.symbol} "
-        f"{alert.side} → {len(candidates)} user(s)"
+        f"{alert.side} → {len(candidates)} account(s)"
     )
 
     results: List[Dict[str, Any]] = []
@@ -274,12 +293,14 @@ def process_alert_multi(alert: AlertData) -> Dict[str, Any]:
                 "action": "error",
                 "alert_id": alert.alert_id,
                 "user_id": c.get("user", {}).get("id"),
+                "account_id": (c.get("connection") or {}).get("account_id"),
                 "reason": str(e),
             }
-            print(f"⚠️  fan-out user error: {e}")
+            print(f"⚠️  fan-out account error: {e}")
         results.append(
             {
                 "user_id": r.get("user_id"),
+                "account_id": r.get("account_id"),
                 "action": r.get("action"),
                 "reason": r.get("reason"),
                 "order_id": r.get("order_id"),

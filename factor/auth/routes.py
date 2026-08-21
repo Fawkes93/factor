@@ -11,11 +11,14 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from factor import config
 from factor.auth.ctrader_oauth import (
     account_id_from_row,
+    account_is_live,
+    broker_name_from_row,
     build_authorize_url,
     exchange_code_for_tokens,
-    fetch_accounts_any_host,
+    fetch_accounts_all_hosts,
     host_for_account,
     pick_default_account,
+    trader_login_from_row,
 )
 from factor.auth.session import clear_session_cookie, read_session_user_id, set_session_cookie
 from factor.crypto.tokens import encrypt_token
@@ -70,50 +73,67 @@ def ctrader_callback(
             datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         ).isoformat().replace("+00:00", "Z")
 
-    accounts, host_tried = fetch_accounts_any_host(access_token=access)
-    # Prefer demo account when available; host follows the selected account
-    account = pick_default_account(accounts, prefer_demo=True)
-    host = host_for_account(account) if account else host_tried
-    account_id = account_id_from_row(account) if account else None
-    if account_id is None:
+    accounts = fetch_accounts_all_hosts(access_token=access)
+    parsed: list = []
+    for acc in accounts:
+        aid = account_id_from_row(acc)
+        if aid is None:
+            continue
+        parsed.append((aid, acc))
+    if not parsed:
         raise HTTPException(
             400,
             "No trading account on this token. Grant trading scope and ensure a "
             "demo/live account is linked to your cTID.",
         )
 
-    # Identity: prefer traderLogin / ctid fields if present
-    ctid = None
-    if account:
-        ctid = (
-            str(account.get("traderLogin") or account.get("ctidTraderId") or "")
-            or None
-        )
-    if not ctid:
-        ctid = f"account:{account_id}"
+    account_ids = [aid for aid, _ in parsed]
+    trader_logins = [trader_login_from_row(acc) for _, acc in parsed]
+    default_acc = pick_default_account([a for _, a in parsed], prefer_demo=True)
+    display = broker_name_from_row(default_acc) if default_acc else None
 
-    display = None
-    if account:
-        display = str(
-            account.get("brokerTitleTitle")
-            or account.get("brokerName")
-            or account.get("depositAsset")
-            or ctid
+    # Prefer attaching extra accounts to the already-logged-in session user
+    # (Add / refresh accounts). Otherwise match by existing account ids / logins.
+    session_uid = read_session_user_id(request)
+    user = repos.get_user(session_uid) if session_uid else None
+    if not user:
+        user = repos.get_or_create_user_for_accounts(
+            account_ids=account_ids,
+            trader_logins=[x for x in trader_logins if x],
+            display_name=display,
         )
-
-    user = repos.upsert_user_by_ctid(ctrader_ctid=ctid, display_name=display)
     user_id = user["id"]
 
-    repos.upsert_ctrader_connection(
-        user_id=user_id,
-        account_id=account_id,
-        host=host,
-        access_token_enc=encrypt_token(access, config.FACTOR_TOKEN_ENC_KEY),
-        refresh_token_enc=encrypt_token(refresh or access, config.FACTOR_TOKEN_ENC_KEY),
-        access_expires_at=expires_at,
-        scopes="trading",
-        raw_meta={"accounts": accounts, "selected": account, "host": host},
-    )
+    access_enc = encrypt_token(access, config.FACTOR_TOKEN_ENC_KEY)
+    refresh_enc = encrypt_token(refresh or access, config.FACTOR_TOKEN_ENC_KEY)
+
+    for aid, acc in parsed:
+        repos.upsert_ctrader_connection(
+            user_id=user_id,
+            account_id=aid,
+            host=host_for_account(acc),
+            access_token_enc=access_enc,
+            refresh_token_enc=refresh_enc,
+            access_expires_at=expires_at,
+            scopes="trading",
+            trader_login=trader_login_from_row(acc),
+            broker_name=broker_name_from_row(acc),
+            is_live=account_is_live(acc),
+            raw_meta={"account": acc, "host": host_for_account(acc)},
+        )
+
+    repos.prune_ungranted_connections(user_id, account_ids)
+
+    granted = set(account_ids)
+    active = user.get("active_account_id")
+    try:
+        active_int = int(active) if active is not None else None
+    except (TypeError, ValueError):
+        active_int = None
+    if active_int not in granted:
+        pick = default_acc or parsed[0][1]
+        active_int = account_id_from_row(pick) or account_ids[0]
+        repos.set_active_account(user_id, active_int)
 
     # Prefs are created from the Alerts UI (add / toggle / delete).
     # Disabled prefs stay in DB so users can pause without losing settings.
@@ -130,36 +150,78 @@ def logout():
     return resp
 
 
-@router.get("/api/me")
-def me(request: Request):
+def _require_user_id(request: Request) -> str:
     uid = read_session_user_id(request)
     if not uid:
         raise HTTPException(401, "not logged in")
     if not supabase_configured():
         raise HTTPException(503, "Supabase not configured")
+    return uid
+
+
+def _selected_connection(uid: str) -> Optional[dict]:
+    return repos.get_connection(uid)
+
+
+@router.get("/api/me")
+def me(request: Request):
+    uid = _require_user_id(request)
     user = repos.get_user(uid)
     if not user:
         raise HTTPException(401, "user not found")
-    conn = repos.get_connection(uid)
-    prefs = repos.list_prefs(uid)
-    safe_conn = None
-    if conn:
-        safe_conn = {
-            "account_id": conn.get("account_id"),
-            "host": conn.get("host"),
-            "access_expires_at": conn.get("access_expires_at"),
-            "updated_at": conn.get("updated_at"),
-        }
+    accounts = [repos.public_connection(c) for c in repos.list_connections(uid)]
+    conn = _selected_connection(uid)
+    safe_conn = repos.public_connection(conn)
+    account_id = int(conn["account_id"]) if conn and conn.get("account_id") is not None else None
+    prefs = repos.list_prefs(uid, account_id) if account_id is not None else []
+    # Surface the selected account's kill flags on user so existing UI keeps working
+    kill = (conn or {}).get("kill_switch")
+    if kill is None:
+        kill = user.get("kill_switch")
+    trading = (conn or {}).get("trading_enabled")
+    if trading is None:
+        trading = user.get("trading_enabled")
     return {
         "user": {
             "id": user["id"],
             "display_name": user.get("display_name"),
-            "kill_switch": user.get("kill_switch"),
-            "trading_enabled": user.get("trading_enabled"),
+            "kill_switch": bool(kill),
+            "trading_enabled": True if trading is None else bool(trading),
             "ctrader_ctid": user.get("ctrader_ctid"),
+            "active_account_id": account_id,
         },
+        "accounts": accounts,
         "connection": safe_conn,
         "prefs": prefs,
+    }
+
+
+@router.post("/api/me/account")
+async def select_account(request: Request):
+    """Switch the dashboard to another granted cTrader account."""
+    uid = _require_user_id(request)
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, f"invalid JSON: {e}") from e
+    raw = body.get("account_id") if isinstance(body, dict) else None
+    try:
+        account_id = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "account_id required")
+    try:
+        user = repos.set_active_account(uid, account_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    conn = repos.get_connection(uid, account_id)
+    return {
+        "ok": True,
+        "account_id": account_id,
+        "user": {
+            "id": user["id"],
+            "active_account_id": user.get("active_account_id"),
+        },
+        "connection": repos.public_connection(conn),
     }
 
 
@@ -168,15 +230,14 @@ def kill(request: Request):
     """
     Per-user kill switch: block new trades + close all open cTrader positions.
     """
-    uid = read_session_user_id(request)
-    if not uid:
-        raise HTTPException(401, "not logged in")
-    if not supabase_configured():
-        raise HTTPException(503, "Supabase not configured")
+    uid = _require_user_id(request)
+    conn = _selected_connection(uid)
+    if not conn:
+        raise HTTPException(400, "no cTrader account")
     from factor.services.kill import activate_kill_switch
 
     try:
-        return activate_kill_switch(uid)
+        return activate_kill_switch(uid, int(conn["account_id"]))
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     except Exception as e:
@@ -186,15 +247,14 @@ def kill(request: Request):
 @router.post("/api/me/resume")
 def resume(request: Request):
     """Clear kill switch; does not re-open positions."""
-    uid = read_session_user_id(request)
-    if not uid:
-        raise HTTPException(401, "not logged in")
-    if not supabase_configured():
-        raise HTTPException(503, "Supabase not configured")
+    uid = _require_user_id(request)
+    conn = _selected_connection(uid)
+    if not conn:
+        raise HTTPException(400, "no cTrader account")
     from factor.services.kill import resume_trading
 
     try:
-        return resume_trading(uid)
+        return resume_trading(uid, int(conn["account_id"]))
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     except Exception as e:
@@ -207,12 +267,10 @@ def my_orders(
     limit: int = Query(default=50, ge=1, le=200),
     status: Optional[str] = None,
 ):
-    uid = read_session_user_id(request)
-    if not uid:
-        raise HTTPException(401, "not logged in")
-    if not supabase_configured():
-        raise HTTPException(503, "Supabase not configured")
-    orders = repos.list_orders(uid, limit=limit, status=status)
+    uid = _require_user_id(request)
+    conn = _selected_connection(uid)
+    account_id = int(conn["account_id"]) if conn and conn.get("account_id") is not None else None
+    orders = repos.list_orders(uid, limit=limit, status=status, account_id=account_id)
     return {"count": len(orders), "orders": orders}
 
 
@@ -223,11 +281,10 @@ async def put_prefs(request: Request):
     Body: { "prefs": [ { kind, symbol, enabled, max_concurrent, max_per_day,
                           volume_lots, sl_points, tp_points }, ... ] }
     """
-    uid = read_session_user_id(request)
-    if not uid:
-        raise HTTPException(401, "not logged in")
-    if not supabase_configured():
-        raise HTTPException(503, "Supabase not configured")
+    uid = _require_user_id(request)
+    conn = _selected_connection(uid)
+    if not conn:
+        raise HTTPException(400, "no cTrader account")
     try:
         body = await request.json()
     except Exception as e:
@@ -236,9 +293,14 @@ async def put_prefs(request: Request):
     if not isinstance(items, list):
         raise HTTPException(400, "prefs must be a list")
     try:
-        # Full replace: keeps disabled prefs (toggle off without losing settings).
-        # Delete in UI = omit from list. One row per (kind, symbol).
-        saved = repos.replace_prefs_for_user(uid, items, only_enabled=False)
+        # Full replace for the selected account only.
+        # Delete in UI = omit from list. One row per (account, kind, symbol).
+        saved = repos.replace_prefs_for_user(
+            uid,
+            items,
+            only_enabled=False,
+            account_id=int(conn["account_id"]),
+        )
     except Exception as e:
         raise HTTPException(500, f"save prefs failed: {e}") from e
     return {"count": len(saved), "prefs": saved}

@@ -104,18 +104,52 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+function accountLabel(a) {
+  if (!a) return "cTrader";
+  if (a.label) return a.label;
+  const broker = String(a.broker_name || "cTrader").trim() || "cTrader";
+  const env = a.is_live ? "Live" : "Demo";
+  const ident = a.trader_login || a.account_id || "";
+  return `${broker} · ${env} · ${ident}`;
+}
+
+function renderAccountSwitch() {
+  const sel = $("#account-switch");
+  if (!sel) return;
+  const accounts = state.me?.accounts || [];
+  const active = state.me?.user?.active_account_id ?? state.me?.connection?.account_id;
+  if (!accounts.length) {
+    sel.classList.add("hidden");
+    sel.innerHTML = "";
+    return;
+  }
+  sel.innerHTML = accounts
+    .map((a) => {
+      const id = a.account_id;
+      const selected = String(id) === String(active) ? " selected" : "";
+      return `<option value="${escapeHtml(String(id))}"${selected}>${escapeHtml(
+        accountLabel(a)
+      )}</option>`;
+    })
+    .join("");
+  sel.classList.remove("hidden");
+}
+
 function renderAccount() {
   const u = state.me?.user || {};
   const c = state.me?.connection;
   const kv = $("#account-kv");
+  const env = c ? (c.is_live ? "Live" : "Demo") : "—";
   kv.innerHTML = `
-    <dt>Name</dt><dd>${escapeHtml(u.display_name || "—")}</dd>
-    <dt>User id</dt><dd>${escapeHtml(u.id || "—")}</dd>
-    <dt>cTrader id</dt><dd>${escapeHtml(u.ctrader_ctid || "—")}</dd>
-    <dt>Account</dt><dd>${c ? escapeHtml(String(c.account_id)) : "— not connected —"}</dd>
+    <dt>Broker</dt><dd>${c ? escapeHtml(c.broker_name || "cTrader") : "—"}</dd>
+    <dt>Environment</dt><dd>${escapeHtml(env)}</dd>
+    <dt>Login</dt><dd>${c ? escapeHtml(String(c.trader_login || "—")) : "—"}</dd>
+    <dt>Account id</dt><dd>${c ? escapeHtml(String(c.account_id)) : "— not connected —"}</dd>
     <dt>Host</dt><dd>${c ? escapeHtml(c.host) : "—"}</dd>
   `;
-  $("#user-label").textContent = u.display_name || u.ctrader_ctid || (u.id || "").slice(0, 8);
+  renderAccountSwitch();
+  const label = c ? accountLabel(c) : u.display_name || u.ctrader_ctid || (u.id || "").slice(0, 8);
+  $("#user-label").textContent = label;
 }
 
 function renderStatus() {
@@ -127,7 +161,7 @@ function renderStatus() {
   kv.innerHTML = `
     <dt>Trading</dt><dd>${u.trading_enabled ? "enabled" : "disabled"}</dd>
     <dt>Kill switch</dt><dd style="color:${killed ? "var(--danger)" : "var(--ok)"}">${
-      killed ? "ON" : "off"
+      killed ? "ON (this account)" : "off"
     }</dd>
     <dt>Prefs</dt><dd>${enabledCount} on · ${totalCount} saved</dd>
   `;
@@ -575,6 +609,25 @@ function bind() {
   const btnLogoutDanger = $("#btn-logout-danger");
   if (btnLogoutDanger) btnLogoutDanger.addEventListener("click", doLogout);
 
+  const accountSwitch = $("#account-switch");
+  if (accountSwitch) {
+    accountSwitch.addEventListener("change", async (e) => {
+      const id = Number(e.target.value);
+      if (!Number.isFinite(id)) return;
+      try {
+        await api("/api/me/account", {
+          method: "POST",
+          body: JSON.stringify({ account_id: id }),
+        });
+        await loadMe();
+        toast("Switched account");
+      } catch (err) {
+        toast(err.message || "Could not switch account", "err");
+        await loadMe();
+      }
+    });
+  }
+
   $("#btn-add-pref").addEventListener("click", onAddPref);
 
   $("#btn-save-prefs").addEventListener("click", async () => {
@@ -594,7 +647,7 @@ function bind() {
   $("#btn-kill").addEventListener("click", async () => {
     if (
       !confirm(
-        "Kill switch will CLOSE ALL open positions on your cTrader account and block new trades. Continue?"
+        "Kill switch will CLOSE ALL open positions on this cTrader account and block new trades on it. Other accounts are not affected. Continue?"
       )
     ) {
       return;

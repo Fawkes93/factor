@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/favicon.svg" />
   <meta name="theme-color" content="#0c0f14" />
-  <link rel="stylesheet" href="/static/css/app.css?v=9" />
+  <link rel="stylesheet" href="/static/css/app.css?v=10" />
 </head>
 <body>
   <div id="app">
@@ -41,6 +41,10 @@
           <button type="button" data-tab="danger" class="tab">Danger</button>
         </nav>
         <div class="top-actions">
+          <label class="account-switch-wrap">
+            <span class="visually-hidden">Trading account</span>
+            <select id="account-switch" class="account-switch hidden" aria-label="Trading account"></select>
+          </label>
           <span id="user-label" class="muted small"></span>
           <button type="button" id="btn-logout" class="btn small ghost">Log out</button>
         </div>
@@ -53,12 +57,16 @@
             <div class="card">
               <h2>Account</h2>
               <dl class="kv" id="account-kv"></dl>
+              <p class="muted small account-refresh">
+                <a href="/auth/ctrader/login">Add / refresh accounts</a>
+                — keep at least one current account checked on the cTrader grant screen.
+              </p>
             </div>
             <div class="card">
               <h2>Status</h2>
               <dl class="kv" id="status-kv"></dl>
               <div id="kill-banner" class="banner danger hidden">
-                Kill switch is <strong>ON</strong> — no new trades. Positions were closed on kill.
+                Kill switch is <strong>ON</strong> for this account — no new trades. Positions on this account were closed on kill.
               </div>
             </div>
           </div>
@@ -110,7 +118,7 @@
         <div id="tab-danger" class="tab-panel hidden">
           <div class="card danger-card">
             <h2>Kill switch</h2>
-            <p>Closes <strong>all open positions</strong> on your linked cTrader account and blocks Factor from placing new trades for you until you resume.</p>
+            <p>Closes <strong>all open positions</strong> on the <strong>selected</strong> cTrader account and blocks Factor from placing new trades on that account until you resume. Other linked accounts are not affected.</p>
             <div class="btn-row">
               <button type="button" id="btn-kill" class="btn danger">Kill — close all &amp; stop</button>
               <button type="button" id="btn-resume" class="btn primary">Resume trading</button>
@@ -130,6 +138,6 @@
 
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/static/js/app.js?v=9"></script>
+  <script src="/static/js/app.js?v=10"></script>
 </body>
 </html>

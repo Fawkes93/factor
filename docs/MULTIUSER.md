@@ -10,9 +10,10 @@ Open `https://your-factor.onrender.com/` after deploy.
 |----|-----|
 | Connect cTrader | `/auth/ctrader/login` |
 | Home / status | `GET /api/me` |
-| Alert settings | `PUT /api/me/prefs` → `PUT /api/me/prefs` |
-| Orders | `GET /api/me/orders` |
-| Kill / Resume | `POST /api/me/kill`, `/api/me/resume` |
+| Switch account | `POST /api/me/account` `{ "account_id": … }` |
+| Alert settings | `PUT /api/me/prefs` (selected account) |
+| Orders | `GET /api/me/orders` (selected account) |
+| Kill / Resume | `POST /api/me/kill`, `/api/me/resume` (selected account) |
 | Log out | `POST /auth/logout` |
 
 Static assets: `/static/css/app.css`, `/static/js/app.js`.
@@ -20,9 +21,11 @@ Static assets: `/static/css/app.css`, `/static/js/app.js`.
 ## Fan-out
 
 1. Reaktor webhook verified (HMAC)  
-2. Load candidates: enabled pref for `(kind, symbol)`, trading on, not killed, has connection  
-3. Per user: **claim** `(user_id, alert_id)` → freshness → market-open blackout → daily cap (`max_per_day` per kind) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
-4. Background poll reconciles open `factor_orders` vs cTrader (marks closed when the position is gone) and may move SL to **breakeven** at half TP  
+2. Load candidates: enabled pref for `(kind, symbol)` **on that account**, trading on, not killed, has connection  
+3. Per account: **claim** `(user_id, account_id, alert_id)` → freshness → market-open blackout → daily cap (`max_per_day` per kind on that account) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
+4. Background poll reconciles open `factor_orders` vs cTrader per account (marks closed when the position is gone) and may move SL to **breakeven** at half TP  
+
+One cTrader login can grant several trading accounts. Each account has its own alert prefs, orders, and kill switch. Dashboard switcher only changes which account you are looking at — fan-out still trades every account that has the pref enabled.  
 
 
 No single-tenant SQLite engine and no Reaktor catch-up trading — **webhooks only**.
@@ -31,8 +34,8 @@ No single-tenant SQLite engine and no Reaktor catch-up trading — **webhooks on
 
 | Path | Effect |
 |------|--------|
-| `POST /api/me/kill` | Per-user: close open cTrader positions, block new trades |
-| `POST /api/me/resume` | Clear per-user kill (does not re-open positions) |
+| `POST /api/me/kill` | Selected account: close open cTrader positions, block new trades |
+| `POST /api/me/resume` | Clear kill on the selected account (does not re-open positions) |
 | `POST /api/kill` | Global process: `TRADING_ENABLED=false` until restart (admin) |
 
 ## OAuth routes
@@ -40,9 +43,10 @@ No single-tenant SQLite engine and no Reaktor catch-up trading — **webhooks on
 | Path | Purpose |
 |------|---------|
 | `GET /auth/ctrader/login` | Start OAuth |
-| `GET /auth/ctrader/callback` | Exchange code, store encrypted tokens, set session |
+| `GET /auth/ctrader/callback` | Exchange code, upsert **all** granted accounts, set session |
 | `POST /auth/logout` | Clear session |
-| `GET /api/me` | Current user + connection (no secrets) + prefs |
+| `GET /api/me` | Current user + accounts list + selected connection (no secrets) + prefs |
+| `POST /api/me/account` | Switch dashboard `active_account_id` |
 
 Redirect URI must match Open API app settings exactly (`CTRADER_REDIRECT_URI`).
 
@@ -51,7 +55,8 @@ Redirect URI must match Open API app settings exactly (`CTRADER_REDIRECT_URI`).
 1. SQL Editor → run `sql/001_factor_multiuser.sql`  
 2. Then `sql/002_breakeven.sql` (optional BE on/off pref column)  
 3. Then `sql/004_breakeven_fraction.sql` (per-pref BE % of TP)  
-4. Project Settings → API → **service_role** key (server only)
+4. Then `sql/005_accounts.sql` (multiple cTrader accounts per user)  
+5. Project Settings → API → **service_role** key (server only)
 
 ## Required env (Render)
 

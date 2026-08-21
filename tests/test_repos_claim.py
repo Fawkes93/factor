@@ -67,8 +67,13 @@ class _FakeQuery:
             if self.table == "factor_processed_alerts":
                 uid = self._payload["user_id"]
                 aid = self._payload["alert_id"]
+                acc = self._payload.get("account_id")
                 for r in rows:
-                    if r["user_id"] == uid and r["alert_id"] == aid:
+                    if (
+                        r["user_id"] == uid
+                        and r["alert_id"] == aid
+                        and r.get("account_id") == acc
+                    ):
                         raise Exception("duplicate key")
             rows.append(dict(self._payload))
             return _FakeResult([dict(self._payload)])
@@ -96,9 +101,11 @@ def test_claim_alert_once(monkeypatch):
     monkeypatch.setattr(db_client, "_client", fake)
     monkeypatch.setattr(repos, "get_supabase", lambda: fake)
 
-    assert repos.claim_alert("user-1", 42, "claimed") is True
-    assert repos.claim_alert("user-1", 42, "claimed") is False
-    assert repos.was_processed("user-1", 42) is True
-    assert repos.was_processed("user-2", 42) is False
+    assert repos.claim_alert("user-1", 42, "claimed", account_id=1) is True
+    assert repos.claim_alert("user-1", 42, "claimed", account_id=1) is False
+    assert repos.was_processed("user-1", 42, account_id=1) is True
+    assert repos.was_processed("user-2", 42, account_id=1) is False
     # different user can claim same alert_id
-    assert repos.claim_alert("user-2", 42, "claimed") is True
+    assert repos.claim_alert("user-2", 42, "claimed", account_id=1) is True
+    # same user, different account can also claim
+    assert repos.claim_alert("user-1", 42, "claimed", account_id=2) is True

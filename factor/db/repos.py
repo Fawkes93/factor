@@ -29,6 +29,96 @@ def _iso_now() -> str:
 # ---------------------------------------------------------------------------
 
 
+def get_user_by_ctid(ctrader_ctid: str) -> Optional[Dict[str, Any]]:
+    sb = get_supabase()
+    res = (
+        sb.table(T_USERS)
+        .select("*")
+        .eq("ctrader_ctid", ctrader_ctid)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def find_user_for_accounts(
+    account_ids: List[int],
+    trader_logins: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Resolve an existing Factor user from granted cTrader accounts.
+
+    Match order: any stored connection.account_id, then users.ctrader_ctid
+    against traderLogin values (legacy 1:1 identity).
+    """
+    sb = get_supabase()
+    ids = []
+    for raw in account_ids or []:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if ids:
+        res = (
+            sb.table(T_CONN)
+            .select("user_id")
+            .in_("account_id", ids)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            user = get_user(str(res.data[0]["user_id"]))
+            if user:
+                return user
+    for login in trader_logins or []:
+        if not login:
+            continue
+        user = get_user_by_ctid(str(login))
+        if user:
+            return user
+    return None
+
+
+def get_or_create_user_for_accounts(
+    *,
+    account_ids: List[int],
+    trader_logins: Optional[List[str]] = None,
+    display_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    found = find_user_for_accounts(account_ids, trader_logins)
+    if found:
+        if display_name and not found.get("display_name"):
+            upd = (
+                get_supabase()
+                .table(T_USERS)
+                .update({"display_name": display_name})
+                .eq("id", found["id"])
+                .execute()
+            )
+            return (upd.data or [found])[0]
+        return found
+    ctid = next((str(x) for x in (trader_logins or []) if x), None)
+    if not ctid and account_ids:
+        ctid = f"account:{int(account_ids[0])}"
+    return upsert_user_by_ctid(ctrader_ctid=ctid, display_name=display_name)
+
+
+def set_active_account(user_id: str, account_id: int) -> Dict[str, Any]:
+    sb = get_supabase()
+    conn = get_connection(user_id, int(account_id))
+    if not conn:
+        raise ValueError("account not found")
+    res = (
+        sb.table(T_USERS)
+        .update({"active_account_id": int(account_id)})
+        .eq("id", user_id)
+        .execute()
+    )
+    if not res.data:
+        raise RuntimeError("set_active_account failed")
+    return res.data[0]
+
+
 def upsert_user_by_ctid(
     *,
     ctrader_ctid: Optional[str],
@@ -73,6 +163,7 @@ def get_user(user_id: str) -> Optional[Dict[str, Any]]:
 
 
 def set_kill_switch(user_id: str, value: bool) -> Dict[str, Any]:
+    """Legacy user-level kill. Prefer set_account_kill_switch."""
     sb = get_supabase()
     res = (
         sb.table(T_USERS)
@@ -98,9 +189,62 @@ def set_trading_enabled(user_id: str, value: bool) -> Dict[str, Any]:
     return res.data[0]
 
 
+def set_account_kill_switch(
+    user_id: str, account_id: int, value: bool
+) -> Dict[str, Any]:
+    sb = get_supabase()
+    res = (
+        sb.table(T_CONN)
+        .update({"kill_switch": bool(value), "trading_enabled": not bool(value)})
+        .eq("user_id", user_id)
+        .eq("account_id", int(account_id))
+        .execute()
+    )
+    if not res.data:
+        raise RuntimeError("set_account_kill_switch failed")
+    return res.data[0]
+
+
 # ---------------------------------------------------------------------------
 # cTrader connections
 # ---------------------------------------------------------------------------
+
+
+def connection_is_live(conn: Optional[Dict[str, Any]]) -> bool:
+    if not conn:
+        return False
+    if conn.get("is_live") is True:
+        return True
+    if conn.get("is_live") is False:
+        return False
+    return str(conn.get("host") or "").lower().startswith("live")
+
+
+def account_label(conn: Optional[Dict[str, Any]]) -> str:
+    if not conn:
+        return "cTrader"
+    broker = str(conn.get("broker_name") or "cTrader").strip() or "cTrader"
+    env = "Live" if connection_is_live(conn) else "Demo"
+    ident = conn.get("trader_login") or conn.get("account_id") or ""
+    return f"{broker} · {env} · {ident}"
+
+
+def public_connection(conn: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Safe account payload for the dashboard (no tokens)."""
+    if not conn:
+        return None
+    return {
+        "account_id": conn.get("account_id"),
+        "host": conn.get("host"),
+        "trader_login": conn.get("trader_login"),
+        "broker_name": conn.get("broker_name"),
+        "is_live": connection_is_live(conn),
+        "kill_switch": bool(conn.get("kill_switch")),
+        "trading_enabled": conn.get("trading_enabled", True),
+        "access_expires_at": conn.get("access_expires_at"),
+        "updated_at": conn.get("updated_at"),
+        "label": account_label(conn),
+    }
 
 
 def upsert_ctrader_connection(
@@ -113,9 +257,18 @@ def upsert_ctrader_connection(
     access_expires_at: Optional[str] = None,
     scopes: Optional[str] = None,
     raw_meta: Optional[Dict[str, Any]] = None,
+    trader_login: Optional[str] = None,
+    broker_name: Optional[str] = None,
+    is_live: Optional[bool] = None,
 ) -> Dict[str, Any]:
+    """
+    Upsert one trading account for the user.
+
+    Tokens are the shared OAuth grant (same ciphertext on every account row).
+    kill_switch / trading_enabled are omitted so re-login does not reset them.
+    """
     sb = get_supabase()
-    payload = {
+    payload: Dict[str, Any] = {
         "user_id": user_id,
         "account_id": int(account_id),
         "host": host,
@@ -125,10 +278,15 @@ def upsert_ctrader_connection(
         "scopes": scopes,
         "raw_meta": raw_meta or {},
     }
-    # upsert on user_id unique
+    if trader_login is not None:
+        payload["trader_login"] = trader_login
+    if broker_name is not None:
+        payload["broker_name"] = broker_name
+    if is_live is not None:
+        payload["is_live"] = bool(is_live)
     res = (
         sb.table(T_CONN)
-        .upsert(payload, on_conflict="user_id")
+        .upsert(payload, on_conflict="user_id,account_id")
         .execute()
     )
     if not res.data:
@@ -136,15 +294,79 @@ def upsert_ctrader_connection(
     return res.data[0]
 
 
-def get_connection(user_id: str) -> Optional[Dict[str, Any]]:
+def get_connection(
+    user_id: str, account_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
     sb = get_supabase()
+    if account_id is not None:
+        res = (
+            sb.table(T_CONN)
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("account_id", int(account_id))
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    user = get_user(user_id)
+    active = user.get("active_account_id") if user else None
+    if active is not None:
+        res = (
+            sb.table(T_CONN)
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("account_id", int(active))
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
     res = sb.table(T_CONN).select("*").eq("user_id", user_id).limit(1).execute()
     return res.data[0] if res.data else None
 
 
-def delete_connection(user_id: str) -> None:
+def list_connections(user_id: str) -> List[Dict[str, Any]]:
     sb = get_supabase()
-    sb.table(T_CONN).delete().eq("user_id", user_id).execute()
+    res = sb.table(T_CONN).select("*").eq("user_id", user_id).execute()
+    rows = list(res.data or [])
+
+    def _sort_key(r: Dict[str, Any]) -> tuple:
+        return (
+            str(r.get("broker_name") or "").lower(),
+            1 if connection_is_live(r) else 0,
+            str(r.get("trader_login") or ""),
+            int(r.get("account_id") or 0),
+        )
+
+    rows.sort(key=_sort_key)
+    return rows
+
+
+def delete_connection(user_id: str, account_id: Optional[int] = None) -> None:
+    sb = get_supabase()
+    q = sb.table(T_CONN).delete().eq("user_id", user_id)
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
+    q.execute()
+
+
+def prune_ungranted_connections(user_id: str, keep_account_ids: List[int]) -> int:
+    """Delete connection rows not in the latest OAuth grant. Prefs are kept."""
+    keep = set()
+    for raw in keep_account_ids or []:
+        try:
+            keep.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not keep:
+        return 0
+    n = 0
+    for row in list_connections(user_id):
+        aid = int(row.get("account_id") or 0)
+        if aid not in keep:
+            delete_connection(user_id, aid)
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +374,14 @@ def delete_connection(user_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def list_prefs(user_id: str) -> List[Dict[str, Any]]:
+def list_prefs(
+    user_id: str, account_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
     sb = get_supabase()
-    res = sb.table(T_PREFS).select("*").eq("user_id", user_id).execute()
+    q = sb.table(T_PREFS).select("*").eq("user_id", user_id)
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
+    res = q.execute()
     rows = []
     for r in res.data or []:
         row = dict(r)
@@ -189,17 +416,20 @@ def upsert_pref(
     tp_points: int = 1000,
     breakeven_half_tp: bool = True,
     breakeven_fraction: float = 0.5,
+    account_id: int,
 ) -> Dict[str, Any]:
     """
-    One row per (user_id, kind, symbol). Update if exists; otherwise insert.
+    One row per (user_id, account_id, kind, symbol). Update if exists; otherwise insert.
     (Avoids PostgREST upsert quirks that can insert duplicates.)
     """
     sb = get_supabase()
     kind = str(kind).strip()
     symbol = str(symbol).strip()
     be_frac = _normalize_breakeven_fraction(breakeven_fraction, 0.5)
+    account_id = int(account_id)
     base = {
         "user_id": user_id,
+        "account_id": account_id,
         "kind": kind,
         "symbol": symbol,
         "enabled": bool(enabled),
@@ -223,6 +453,7 @@ def upsert_pref(
         sb.table(T_PREFS)
         .select("id")
         .eq("user_id", user_id)
+        .eq("account_id", account_id)
         .eq("kind", kind)
         .eq("symbol", symbol)
         .limit(1)
@@ -263,17 +494,21 @@ def replace_prefs_for_user(
     prefs: List[Dict[str, Any]],
     *,
     only_enabled: bool = False,
+    account_id: int,
 ) -> List[Dict[str, Any]]:
     """
-    Replace the user's prefs with the given list (full replace).
+    Replace prefs for one of the user's trading accounts (full replace).
 
     Keeps disabled rows when only_enabled=False (default) so users can
     toggle off without losing SL/TP/caps. only_enabled=True drops disabled.
-    One row per (kind, symbol); first occurrence wins if duplicates in payload.
+    One row per (account, kind, symbol); first occurrence wins if duplicates.
     """
     sb = get_supabase()
-    # Wipe existing rows for this user, then insert clean set
-    sb.table(T_PREFS).delete().eq("user_id", user_id).execute()
+    account_id = int(account_id)
+    # Wipe existing rows for this user+account, then insert clean set
+    sb.table(T_PREFS).delete().eq("user_id", user_id).eq(
+        "account_id", account_id
+    ).execute()
 
     saved: List[Dict[str, Any]] = []
     seen = set()
@@ -296,6 +531,7 @@ def replace_prefs_for_user(
         be_frac = raw.get("breakeven_fraction", 0.5)
         row = upsert_pref(
             user_id=user_id,
+            account_id=account_id,
             kind=kind,
             symbol=symbol,
             enabled=enabled,
@@ -317,11 +553,10 @@ def list_candidates_for_alert(
     symbol: str,
 ) -> List[Dict[str, Any]]:
     """
-    Users who can receive this alert: enabled pref, trading on, not killed,
-    has a cTrader connection. Returns joined-ish rows (user + pref + connection ids).
+    Accounts that can receive this alert: enabled pref for that account,
+    trading on, not killed, has a matching cTrader connection.
     """
     sb = get_supabase()
-    # Prefs enabled for kind/symbol
     prefs = (
         sb.table(T_PREFS)
         .select("*")
@@ -335,12 +570,24 @@ def list_candidates_for_alert(
         user = get_user(pref["user_id"])
         if not user:
             continue
-        if user.get("kill_switch"):
-            continue
-        if not user.get("trading_enabled", True):
-            continue
-        conn = get_connection(pref["user_id"])
+        account_id = pref.get("account_id")
+        if account_id is not None:
+            conn = get_connection(pref["user_id"], int(account_id))
+        else:
+            conn = get_connection(pref["user_id"])
         if not conn:
+            continue
+        if account_id is not None and int(conn.get("account_id") or 0) != int(
+            account_id
+        ):
+            continue
+        conn_killed = conn.get("kill_switch")
+        if conn_killed or (conn_killed is None and user.get("kill_switch")):
+            continue
+        conn_enabled = conn.get("trading_enabled")
+        if conn_enabled is False or (
+            conn_enabled is None and not user.get("trading_enabled", True)
+        ):
             continue
         out.append({"user": user, "pref": pref, "connection": conn})
     return out
@@ -367,9 +614,10 @@ def insert_order(
     broker_order_id: Optional[str] = None,
     broker_position_id: Optional[str] = None,
     detail: Optional[Dict[str, Any]] = None,
+    account_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     sb = get_supabase()
-    payload = {
+    payload: Dict[str, Any] = {
         "user_id": user_id,
         "reaktor_alert_id": int(reaktor_alert_id),
         "kind": kind,
@@ -385,6 +633,8 @@ def insert_order(
         "broker_position_id": broker_position_id,
         "detail": detail or {},
     }
+    if account_id is not None:
+        payload["account_id"] = int(account_id)
     res = sb.table(T_ORDERS).insert(payload).execute()
     if not res.data:
         raise RuntimeError("insert_order failed")
@@ -396,6 +646,7 @@ def list_orders(
     *,
     limit: int = 50,
     status: Optional[str] = None,
+    account_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     sb = get_supabase()
     limit = max(1, min(int(limit), 200))
@@ -406,6 +657,8 @@ def list_orders(
         .order("created_at", desc=True)
         .limit(limit)
     )
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
     if status:
         q = q.eq("status", status)
     res = q.execute()
@@ -417,6 +670,7 @@ def count_orders_today(
     *,
     kind: str,
     statuses: Optional[List[str]] = None,
+    account_id: Optional[int] = None,
 ) -> int:
     """Count orders created since UTC midnight for kind (for daily cap)."""
     sb = get_supabase()
@@ -428,6 +682,8 @@ def count_orders_today(
         .eq("kind", kind)
         .gte("created_at", day)
     )
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
     if statuses:
         q = q.in_("status", statuses)
     else:
@@ -444,12 +700,13 @@ def count_open_orders_db(
     *,
     kind: Optional[str] = None,
     symbol: Optional[str] = None,
+    account_id: Optional[int] = None,
 ) -> int:
     """
     Count Factor orders with status=open for concurrent caps.
 
-    Scoped to kind and/or symbol so max_concurrent is per alert pref
-    (kind + symbol), not account-wide.
+    Scoped to account + kind + symbol so max_concurrent is per alert pref
+    on that trading account, not across the user's other accounts.
     """
     sb = get_supabase()
     q = (
@@ -458,6 +715,8 @@ def count_open_orders_db(
         .eq("user_id", user_id)
         .eq("status", "open")
     )
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
     if kind:
         q = q.eq("kind", kind)
     if symbol:
@@ -473,8 +732,9 @@ def mark_open_orders_closed(
     *,
     reason: str = "kill_switch",
     result: str = "unknown",
+    account_id: Optional[int] = None,
 ) -> int:
-    """Mark all status=open orders for user as closed. Returns rows updated (best-effort)."""
+    """Mark status=open orders as closed. Optionally scoped to one account."""
     sb = get_supabase()
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     payload: Dict[str, Any] = {
@@ -483,24 +743,25 @@ def mark_open_orders_closed(
         "skip_reason": reason,
         "result": result,
     }
-    try:
-        res = (
+
+    def _run(fields: Dict[str, Any]):
+        q = (
             sb.table(T_ORDERS)
-            .update(payload)
+            .update(fields)
             .eq("user_id", user_id)
             .eq("status", "open")
-            .execute()
         )
+        if account_id is not None:
+            q = q.eq("account_id", int(account_id))
+        return q.execute()
+
+    try:
+        res = _run(payload)
     except Exception:
         # Pre-migration: no result column yet
-        payload.pop("result", None)
-        res = (
-            sb.table(T_ORDERS)
-            .update(payload)
-            .eq("user_id", user_id)
-            .eq("status", "open")
-            .execute()
-        )
+        fields = dict(payload)
+        fields.pop("result", None)
+        res = _run(fields)
     return len(res.data or [])
 
 
@@ -535,45 +796,61 @@ def update_order(order_id: str, **fields: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def claim_alert(user_id: str, alert_id: int, reason: str = "claimed") -> bool:
+def claim_alert(
+    user_id: str,
+    alert_id: int,
+    reason: str = "claimed",
+    account_id: Optional[int] = None,
+) -> bool:
     """
-    Try to claim alert for user. Returns True if this call owns the claim.
-    False if already processed (conflict).
+    Try to claim alert for one trading account. Returns True if this call
+    owns the claim. False if already processed (conflict).
     """
     sb = get_supabase()
+    acc = int(account_id) if account_id is not None else 0
+    payload = {
+        "user_id": user_id,
+        "alert_id": int(alert_id),
+        "reason": reason,
+        "account_id": acc,
+    }
     try:
-        res = (
-            sb.table(T_PROCESSED)
-            .insert(
-                {
-                    "user_id": user_id,
-                    "alert_id": int(alert_id),
-                    "reason": reason,
-                }
-            )
-            .execute()
-        )
+        res = sb.table(T_PROCESSED).insert(payload).execute()
         return bool(res.data)
     except Exception:
         # unique violation → already claimed
         return False
 
 
-def was_processed(user_id: str, alert_id: int) -> bool:
+def was_processed(
+    user_id: str, alert_id: int, account_id: Optional[int] = None
+) -> bool:
     sb = get_supabase()
-    res = (
+    q = (
         sb.table(T_PROCESSED)
         .select("alert_id")
         .eq("user_id", user_id)
         .eq("alert_id", int(alert_id))
-        .limit(1)
-        .execute()
     )
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
+    res = q.limit(1).execute()
     return bool(res.data)
 
 
-def update_processed_reason(user_id: str, alert_id: int, reason: str) -> None:
+def update_processed_reason(
+    user_id: str,
+    alert_id: int,
+    reason: str,
+    account_id: Optional[int] = None,
+) -> None:
     sb = get_supabase()
-    sb.table(T_PROCESSED).update({"reason": reason}).eq("user_id", user_id).eq(
-        "alert_id", int(alert_id)
-    ).execute()
+    q = (
+        sb.table(T_PROCESSED)
+        .update({"reason": reason})
+        .eq("user_id", user_id)
+        .eq("alert_id", int(alert_id))
+    )
+    if account_id is not None:
+        q = q.eq("account_id", int(account_id))
+    q.execute()

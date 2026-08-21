@@ -151,6 +151,26 @@ def fetch_accounts_for_token(
         client.close()
 
 
+def _host_is_live(host: str) -> bool:
+    return str(host or "").lower().startswith("live")
+
+
+def account_is_live(account: Optional[Dict[str, Any]]) -> bool:
+    """True for live/real accounts; False for demo."""
+    if not account:
+        return False
+    if account.get("_is_live") is True or account.get("isLive") is True:
+        return True
+    if account.get("_is_live") is False or account.get("isLive") is False:
+        return False
+    env = str(account.get("environment") or "").lower()
+    if env in ("live", "prod", "production", "real"):
+        return True
+    if env == "demo":
+        return False
+    return _host_is_live(str(account.get("_host") or ""))
+
+
 def pick_default_account(
     accounts: List[Dict[str, Any]],
     *,
@@ -160,8 +180,7 @@ def pick_default_account(
         return None
     if prefer_demo:
         for a in accounts:
-            # isLive is False for demo on many payloads
-            if a.get("isLive") is False or str(a.get("environment", "")).lower() == "demo":
+            if not account_is_live(a):
                 return a
     return accounts[0]
 
@@ -176,27 +195,97 @@ def account_id_from_row(row: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def trader_login_from_row(row: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not row:
+        return None
+    raw = row.get("traderLogin") or row.get("trader_login")
+    if raw is None or raw == "":
+        return None
+    return str(raw)
+
+
+def broker_name_from_row(row: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not row:
+        return None
+    for key in (
+        "brokerTitleTitle",
+        "brokerTitle",
+        "brokerName",
+        "broker",
+        "broker_name",
+    ):
+        val = row.get(key)
+        if val:
+            return str(val)
+    return None
+
+
 def host_for_account(account: Optional[Dict[str, Any]]) -> str:
     """Pick demo/live API host from account flags."""
     if not account:
         return "demo.ctraderapi.com"
-    if account.get("isLive") is True:
-        return "live.ctraderapi.com"
-    env = str(account.get("environment") or "").lower()
-    if env in ("live", "prod", "production", "real"):
+    annotated = account.get("_host")
+    if annotated:
+        return str(annotated)
+    if account_is_live(account):
         return "live.ctraderapi.com"
     return "demo.ctraderapi.com"
 
 
-def fetch_accounts_any_host(*, access_token: str) -> tuple:
+def _annotate_account(account: Dict[str, Any], host: str) -> Dict[str, Any]:
+    a = dict(account)
+    live = account_is_live(a) if (
+        a.get("isLive") is not None or a.get("environment")
+    ) else _host_is_live(host)
+    a["_is_live"] = bool(live)
+    a["_host"] = "live.ctraderapi.com" if live else "demo.ctraderapi.com"
+    # Prefer the host we actually queried when flags are missing
+    if a.get("isLive") is None and not a.get("environment"):
+        a["_host"] = host
+        a["_is_live"] = _host_is_live(host)
+    return a
+
+
+def fetch_accounts_all_hosts(*, access_token: str) -> List[Dict[str, Any]]:
     """
-    Try demo host first, then live. Returns (accounts, host_used).
+    Query demo AND live hosts and merge by ctidTraderAccountId.
+
+    Each row is annotated with `_host` and `_is_live`. Previously Factor
+    stopped at the first host that returned anything, so live accounts were
+    dropped whenever a demo account existed.
     """
+    seen: Dict[int, Dict[str, Any]] = {}
     for host in ("demo.ctraderapi.com", "live.ctraderapi.com"):
         try:
             accounts = fetch_accounts_for_token(access_token=access_token, host=host)
-            if accounts:
-                return accounts, host
         except Exception as e:
             print(f"⚠️  account list on {host}: {e}")
-    return [], "demo.ctraderapi.com"
+            continue
+        for raw in accounts:
+            aid = account_id_from_row(raw)
+            if aid is None:
+                continue
+            annotated = _annotate_account(raw, host)
+            prev = seen.get(aid)
+            if prev is None:
+                seen[aid] = annotated
+                continue
+            # Prefer the host that matches isLive when both hosts return it
+            want_live = account_is_live(annotated)
+            new_matches = _host_is_live(annotated["_host"]) == want_live
+            prev_matches = _host_is_live(prev.get("_host") or "") == want_live
+            if new_matches and not prev_matches:
+                seen[aid] = annotated
+    return list(seen.values())
+
+
+def fetch_accounts_any_host(*, access_token: str) -> tuple:
+    """
+    Legacy: first non-empty host. Prefer fetch_accounts_all_hosts.
+    Returns (accounts, host_used).
+    """
+    accounts = fetch_accounts_all_hosts(access_token=access_token)
+    if not accounts:
+        return [], "demo.ctraderapi.com"
+    host = str(accounts[0].get("_host") or "demo.ctraderapi.com")
+    return accounts, host

@@ -788,20 +788,26 @@ def run_breakeven_cycle() -> Dict[str, Any]:
         print(f"⚠️  BE list_open_orders_all failed: {e}")
         return out
 
-    # Group by user_id — include ALL open rows (even BE already applied)
-    by_user: Dict[str, List[Dict[str, Any]]] = {}
+    # Group by (user_id, account_id) — include ALL open rows (even BE already applied)
+    by_account: Dict[Tuple[str, Optional[int]], List[Dict[str, Any]]] = {}
     for o in open_orders:
         uid = str(o.get("user_id") or "")
         if not uid:
             continue
-        by_user.setdefault(uid, []).append(o)
+        raw_aid = o.get("account_id")
+        try:
+            aid = int(raw_aid) if raw_aid is not None else None
+        except (TypeError, ValueError):
+            aid = None
+        by_account.setdefault((uid, aid), []).append(o)
 
-    for uid, orders in by_user.items():
+    for (uid, aid), orders in by_account.items():
+        tag = f"{uid[:8]}:{aid}" if aid is not None else uid[:8]
         conn = None
         try:
-            conn = repos.get_connection(uid)
+            conn = repos.get_connection(uid, aid)
         except Exception as e:
-            print(f"⚠️  BE get_connection {uid[:8]}: {e}")
+            print(f"⚠️  BE get_connection {tag}: {e}")
             continue
         if not conn:
             continue
@@ -816,17 +822,17 @@ def run_breakeven_cycle() -> Dict[str, Any]:
                 dry_run=config.CTRADER_DRY_RUN,
             )
         except Exception as e:
-            print(f"⚠️  BE broker build {uid[:8]}: {e}")
+            print(f"⚠️  BE broker build {tag}: {e}")
             out["errors"] += 1
             continue
 
-        # One WebSocket per user per cycle: list + spot + amend
+        # One WebSocket per account per cycle: list + spot + amend
         try:
             with broker.session() as session:
                 try:
                     positions = session.list_open_positions_info()
                 except Exception as e:
-                    print(f"⚠️  BE list positions {uid[:8]}: {e}")
+                    print(f"⚠️  BE list positions {tag}: {e}")
                     out["errors"] += 1
                     continue
 
@@ -850,7 +856,7 @@ def run_breakeven_cycle() -> Dict[str, Any]:
                         out["errors"] += 1
                         print(f"⚠️  BE process order failed: {e}")
         except Exception as e:
-            print(f"⚠️  BE session run {uid[:8]}: {e}")
+            print(f"⚠️  BE session run {tag}: {e}")
             out["errors"] += 1
 
     return out

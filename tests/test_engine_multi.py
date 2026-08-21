@@ -70,19 +70,19 @@ def test_fanout_trades_and_skips_open_same_pref(monkeypatch):
     # Simulate Factor open-order book: (kind, symbol) -> open count
     open_by_pref: Dict[tuple, int] = {}
 
-    def claim(uid, aid, reason="claimed"):
-        key = (uid, aid)
+    def claim(uid, aid, reason="claimed", account_id=None):
+        key = (uid, aid, account_id)
         if key in claimed:
             return False
         claimed.add(key)
         return True
 
-    def count_open(uid, kind=None, symbol=None):
-        return int(open_by_pref.get((kind, symbol), 0))
+    def count_open(uid, kind=None, symbol=None, account_id=None):
+        return int(open_by_pref.get((account_id, kind, symbol), 0))
 
     def insert_order(**k):
         if k.get("status") == "open":
-            key = (k.get("kind"), k.get("symbol"))
+            key = (k.get("account_id"), k.get("kind"), k.get("symbol"))
             open_by_pref[key] = open_by_pref.get(key, 0) + 1
         return {"id": "ord-1"}
 
@@ -149,19 +149,19 @@ def test_max_concurrent_is_per_kind(monkeypatch):
     claimed: set = set()
     open_by_pref: Dict[tuple, int] = {}
 
-    def claim(uid, aid, reason="claimed"):
-        key = (uid, aid)
+    def claim(uid, aid, reason="claimed", account_id=None):
+        key = (uid, aid, account_id)
         if key in claimed:
             return False
         claimed.add(key)
         return True
 
-    def count_open(uid, kind=None, symbol=None):
-        return int(open_by_pref.get((kind, symbol), 0))
+    def count_open(uid, kind=None, symbol=None, account_id=None):
+        return int(open_by_pref.get((account_id, kind, symbol), 0))
 
     def insert_order(**k):
         if k.get("status") == "open":
-            key = (k.get("kind"), k.get("symbol"))
+            key = (k.get("account_id"), k.get("kind"), k.get("symbol"))
             open_by_pref[key] = open_by_pref.get(key, 0) + 1
         return {"id": "ord-x"}
 
@@ -194,8 +194,8 @@ def test_max_concurrent_is_per_kind(monkeypatch):
         connection=conn,
     )
     assert r_spike["action"] == "traded"
-    assert open_by_pref[("candle", "XAU/USD")] == 1
-    assert open_by_pref[("spike", "XAU/USD")] == 1
+    assert open_by_pref[(55, "candle", "XAU/USD")] == 1
+    assert open_by_pref[(55, "spike", "XAU/USD")] == 1
 
 
 def test_claim_prevents_double(monkeypatch):
@@ -224,7 +224,7 @@ def test_claim_prevents_double(monkeypatch):
 
     calls = {"claim": 0, "place": 0}
 
-    def claim(uid, aid, reason="claimed"):
+    def claim(uid, aid, reason="claimed", account_id=None):
         calls["claim"] += 1
         return calls["claim"] == 1  # only first succeeds
 
@@ -254,6 +254,120 @@ def test_claim_prevents_double(monkeypatch):
     assert r2["action"] == "skip"
     assert r2["reason"] == "duplicate_alert_id"
     assert calls["place"] == 1
+
+
+def test_two_accounts_both_trade(monkeypatch):
+    """Same user, two accounts with the same pref both receive the alert."""
+    from factor import engine_multi
+    from factor.crypto.tokens import encrypt_token
+    from factor.db import repos
+
+    enc = encrypt_token("access-tok", config.FACTOR_TOKEN_ENC_KEY)
+    user = {
+        "id": "55555555-5555-5555-5555-555555555555",
+        "kill_switch": False,
+        "trading_enabled": True,
+    }
+    pref = {
+        "volume_lots": 0.01,
+        "sl_points": 1000,
+        "tp_points": 1000,
+        "max_concurrent": 1,
+        "max_per_day": 5,
+    }
+    conn_a = {
+        "account_id": 111,
+        "host": "demo.ctraderapi.com",
+        "access_token_enc": enc,
+    }
+    conn_b = {
+        "account_id": 222,
+        "host": "live.ctraderapi.com",
+        "access_token_enc": enc,
+        "is_live": True,
+    }
+
+    claimed: set = set()
+
+    def claim(uid, aid, reason="claimed", account_id=None):
+        key = (uid, aid, account_id)
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    monkeypatch.setattr(repos, "claim_alert", claim)
+    monkeypatch.setattr(repos, "update_processed_reason", lambda *a, **k: None)
+    monkeypatch.setattr(repos, "insert_order", lambda **k: {"id": f"ord-{k.get('account_id')}"})
+    monkeypatch.setattr(repos, "count_orders_today", lambda *a, **k: 0)
+    monkeypatch.setattr(repos, "count_open_orders_db", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        repos,
+        "list_candidates_for_alert",
+        lambda **k: [
+            {"user": user, "pref": pref, "connection": conn_a},
+            {"user": user, "pref": pref, "connection": conn_b},
+        ],
+    )
+
+    class FakeBroker:
+        def place_market_with_sl_tp(self, plan):
+            return OrderResult(ok=True, status="open", broker_order_id="b", message="ok")
+
+    monkeypatch.setattr(
+        engine_multi, "broker_from_connection", lambda **k: FakeBroker()
+    )
+
+    r = engine_multi.process_alert_multi(_alert(alert_id=88, kind="candle"))
+    assert r["traded"] == 2
+    assert r["users"] == 2
+    ids = {row["account_id"] for row in r["results"]}
+    assert ids == {111, 222}
+
+
+def test_account_kill_not_overridden_by_user_flag(monkeypatch):
+    """Resumed account must trade even if legacy user.kill_switch is still true."""
+    from factor import engine_multi
+    from factor.crypto.tokens import encrypt_token
+    from factor.db import repos
+
+    enc = encrypt_token("t", config.FACTOR_TOKEN_ENC_KEY)
+    user = {
+        "id": "66666666-6666-6666-6666-666666666666",
+        "kill_switch": True,
+        "trading_enabled": False,
+    }
+    pref = {
+        "volume_lots": 0.01,
+        "sl_points": 1000,
+        "tp_points": 1000,
+        "max_concurrent": 1,
+        "max_per_day": 5,
+    }
+    conn = {
+        "account_id": 9,
+        "host": "demo.ctraderapi.com",
+        "access_token_enc": enc,
+        "kill_switch": False,
+        "trading_enabled": True,
+    }
+    monkeypatch.setattr(repos, "claim_alert", lambda *a, **k: True)
+    monkeypatch.setattr(repos, "update_processed_reason", lambda *a, **k: None)
+    monkeypatch.setattr(repos, "insert_order", lambda **k: {"id": "ok"})
+    monkeypatch.setattr(repos, "count_orders_today", lambda *a, **k: 0)
+    monkeypatch.setattr(repos, "count_open_orders_db", lambda *a, **k: 0)
+
+    class FakeBroker:
+        def place_market_with_sl_tp(self, plan):
+            return OrderResult(ok=True, status="open", broker_order_id="x")
+
+    monkeypatch.setattr(
+        engine_multi, "broker_from_connection", lambda **k: FakeBroker()
+    )
+    r = engine_multi.process_alert_for_user(
+        _alert(alert_id=9), user=user, pref=pref, connection=conn
+    )
+    assert r["action"] == "traded"
 
 
 def test_stale_skipped(monkeypatch):

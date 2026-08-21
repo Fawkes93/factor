@@ -42,6 +42,10 @@ class _FakeQuery:
         self._filters.append((col, val))
         return self
 
+    def in_(self, col, vals):
+        self._filters.append((col, ("in", list(vals))))
+        return self
+
     def limit(self, n):
         self._limit = n
         return self
@@ -50,7 +54,13 @@ class _FakeQuery:
         rows = self.store.tables.setdefault(self.table, [])
 
         def match(r):
-            return all(r.get(c) == v for c, v in self._filters)
+            for c, v in self._filters:
+                if isinstance(v, tuple) and v and v[0] == "in":
+                    if r.get(c) not in v[1]:
+                        return False
+                elif r.get(c) != v:
+                    return False
+            return True
 
         if self._op == "delete":
             kept = [r for r in rows if not match(r)]
@@ -126,6 +136,7 @@ def test_replace_keeps_disabled_rows(monkeypatch):
             },
         ],
         only_enabled=False,
+        account_id=1001,
     )
     assert len(saved) == 2
     by_kind = {r["kind"]: r for r in saved}
@@ -155,6 +166,7 @@ def test_only_enabled_drops_disabled(monkeypatch):
             {"kind": "spike", "symbol": "XAU/USD", "enabled": False, "sl_points": 777},
         ],
         only_enabled=True,
+        account_id=1001,
     )
     assert len(saved) == 1
     assert saved[0]["kind"] == "candle"
@@ -176,13 +188,48 @@ def test_delete_via_omission(monkeypatch):
             {"kind": "spike", "symbol": "XAU/USD", "enabled": False},
         ],
         only_enabled=False,
+        account_id=1001,
     )
     # Trash spike — omit from payload
     saved = repos.replace_prefs_for_user(
         uid,
         [{"kind": "candle", "symbol": "XAU/USD", "enabled": True}],
         only_enabled=False,
+        account_id=1001,
     )
     assert len(saved) == 1
     assert saved[0]["kind"] == "candle"
-    assert len(repos.list_prefs(uid)) == 1
+    assert len(repos.list_prefs(uid, 1001)) == 1
+
+
+def test_replace_does_not_wipe_other_account(monkeypatch):
+    from factor.db import repos
+    from factor.db import client as db_client
+
+    fake = _FakeSB()
+    monkeypatch.setattr(db_client, "_client", fake)
+    monkeypatch.setattr(repos, "get_supabase", lambda: fake)
+
+    uid = "user-prefs-4"
+    repos.replace_prefs_for_user(
+        uid,
+        [{"kind": "candle", "symbol": "XAU/USD", "enabled": True}],
+        account_id=11,
+    )
+    repos.replace_prefs_for_user(
+        uid,
+        [{"kind": "spike", "symbol": "XAU/USD", "enabled": True}],
+        account_id=22,
+    )
+    assert len(repos.list_prefs(uid, 11)) == 1
+    assert repos.list_prefs(uid, 11)[0]["kind"] == "candle"
+    assert len(repos.list_prefs(uid, 22)) == 1
+    assert repos.list_prefs(uid, 22)[0]["kind"] == "spike"
+
+    repos.replace_prefs_for_user(
+        uid,
+        [{"kind": "candle", "symbol": "EUR/USD", "enabled": True}],
+        account_id=11,
+    )
+    assert repos.list_prefs(uid, 11)[0]["symbol"] == "EUR/USD"
+    assert repos.list_prefs(uid, 22)[0]["kind"] == "spike"

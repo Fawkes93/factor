@@ -1,10 +1,10 @@
 """
-Per-user kill switch: block new trades + close open cTrader positions.
+Per-account kill switch: block new trades + close open cTrader positions.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from factor import config
 from factor.broker.ctrader import broker_from_connection
@@ -12,27 +12,31 @@ from factor.crypto.tokens import decrypt_token
 from factor.db import repos
 
 
-def activate_kill_switch(user_id: str) -> Dict[str, Any]:
+def activate_kill_switch(
+    user_id: str, account_id: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    1. Set kill_switch=true (and trading_enabled=false)
-    2. Close all open positions on user's cTrader account
-    3. Mark local open orders as closed
+    1. Set kill_switch=true on this trading account (trading_enabled=false)
+    2. Close all open positions on that cTrader account
+    3. Mark local open orders for that account as closed
 
     Always leaves kill_switch true even if some closes fail.
+    Other accounts for the same user are not affected.
     """
     user = repos.get_user(user_id)
     if not user:
         raise ValueError("user not found")
 
-    user = repos.set_kill_switch(user_id, True)
-    print(f"🛑 Kill switch ON for user {user_id[:8]}…")
+    conn = repos.get_connection(user_id, account_id)
+    if not conn:
+        raise ValueError("account not found")
+    account_id = int(conn["account_id"])
+
+    conn = repos.set_account_kill_switch(user_id, account_id, True)
+    print(f"🛑 Kill switch ON for user {user_id[:8]} account {account_id}…")
 
     close_results: List[Dict[str, Any]] = []
-    conn = repos.get_connection(user_id)
-    if not conn:
-        print(f"⚠️  Kill: no cTrader connection for {user_id[:8]}")
-        close_results.append({"ok": False, "message": "no_ctrader_connection"})
-    elif not config.FACTOR_TOKEN_ENC_KEY:
+    if not config.FACTOR_TOKEN_ENC_KEY:
         close_results.append({"ok": False, "message": "FACTOR_TOKEN_ENC_KEY missing"})
     else:
         try:
@@ -41,7 +45,7 @@ def activate_kill_switch(user_id: str) -> Dict[str, Any]:
             )
             broker = broker_from_connection(
                 access_token=access,
-                account_id=int(conn["account_id"]),
+                account_id=account_id,
                 host=str(conn.get("host") or "demo.ctraderapi.com"),
                 dry_run=config.CTRADER_DRY_RUN,
             )
@@ -52,7 +56,9 @@ def activate_kill_switch(user_id: str) -> Dict[str, Any]:
 
     db_closed = 0
     try:
-        db_closed = repos.mark_open_orders_closed(user_id, reason="kill_switch")
+        db_closed = repos.mark_open_orders_closed(
+            user_id, reason="kill_switch", account_id=account_id
+        )
     except Exception as e:
         print(f"⚠️  mark_open_orders_closed: {e}")
 
@@ -64,6 +70,7 @@ def activate_kill_switch(user_id: str) -> Dict[str, Any]:
         "kill_switch": True,
         "trading_enabled": False,
         "user_id": user_id,
+        "account_id": account_id,
         "close": {
             "results": close_results,
             "ok_count": closed_ok,
@@ -71,30 +78,39 @@ def activate_kill_switch(user_id: str) -> Dict[str, Any]:
         },
         "orders_marked_closed": db_closed,
         "user": {
-            "kill_switch": user.get("kill_switch"),
-            "trading_enabled": user.get("trading_enabled"),
+            "kill_switch": True,
+            "trading_enabled": False,
         },
     }
 
 
-def resume_trading(user_id: str) -> Dict[str, Any]:
+def resume_trading(
+    user_id: str, account_id: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    Clear kill switch and re-enable trading.
+    Clear kill switch on this trading account and re-enable trading.
     Does not re-open positions.
     """
     user = repos.get_user(user_id)
     if not user:
         raise ValueError("user not found")
-    user = repos.set_kill_switch(user_id, False)
-    # set_kill_switch(False) sets trading_enabled=True
-    print(f"▶️  Kill switch OFF / trading resumed for user {user_id[:8]}…")
+    conn = repos.get_connection(user_id, account_id)
+    if not conn:
+        raise ValueError("account not found")
+    account_id = int(conn["account_id"])
+    conn = repos.set_account_kill_switch(user_id, account_id, False)
+    print(
+        f"▶️  Kill switch OFF / trading resumed for user {user_id[:8]} "
+        f"account {account_id}…"
+    )
     return {
         "ok": True,
         "kill_switch": False,
         "trading_enabled": True,
         "user_id": user_id,
+        "account_id": account_id,
         "user": {
-            "kill_switch": user.get("kill_switch"),
-            "trading_enabled": user.get("trading_enabled"),
+            "kill_switch": False,
+            "trading_enabled": True,
         },
     }

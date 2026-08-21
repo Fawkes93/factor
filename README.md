@@ -19,7 +19,7 @@ Short version:
 1. Repo: https://github.com/Fawkes93/factor  
 2. Render Web Service · paid always-on · health `/api/health`  
 3. Secrets: webhook, Supabase, OAuth app, token/session secrets, redirect URI  
-4. Run SQL: `sql/001_factor_multiuser.sql` (+ optional `002_breakeven.sql`)  
+4. Run SQL: `sql/001_factor_multiuser.sql` (+ `002`–`005` as needed; `005` = multi-account)  
 5. Start with `CTRADER_HOST=demo`, `CTRADER_DRY_RUN=true`, `TRADING_ENABLED=false`  
 6. Point Reaktor `REAKTOR_WEBHOOKS` at Factor  
 7. Open `/` → Connect with cTrader → enable alert prefs  
