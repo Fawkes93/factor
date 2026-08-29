@@ -625,6 +625,19 @@ def process_open_order_for_be(
         return {"order_id": order_id, "action": "skip", "reason": reason}
 
     psz = _resolve_point_size(order, meta)
+
+    # Asia breakout: trail + flatten instead of (or before) generic BE
+    protect_blob = (order.get("detail") or {}).get("protect") if isinstance(order.get("detail"), dict) else None
+    if isinstance(protect_blob, dict) and protect_blob.get("enabled"):
+        from factor.services.protect import process_open_order_for_protect
+
+        return process_open_order_for_protect(
+            order,
+            broker=broker,
+            pos=pos,
+            mark=mark,
+            point_size=psz,
+        )
     order_sl = None
     try:
         order_sl = float(order["sl_price"]) if order.get("sl_price") is not None else None

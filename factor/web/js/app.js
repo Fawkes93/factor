@@ -208,6 +208,7 @@ const ALERT_KINDS = [
   { id: "spike", label: "Spike" },
   { id: "spike_neo", label: "Spike Neo" },
   { id: "impulse_retrace", label: "Impulse retrace" },
+  { id: "asia_breakout", label: "Asia breakout" },
 ];
 
 /**
@@ -228,17 +229,18 @@ let prefsSaving = false;
 function newPref(kind = "candle") {
   // Spike-family defaults match typical tighter stops (editable after add)
   const spikeLike = kind === "spike" || kind === "spike_neo";
+  const asia = kind === "asia_breakout";
   // Continuation after pullback — same risk shell as range by default
   return {
     kind,
     symbol: ALERT_SYMBOLS[0].id,
     enabled: true,
     max_concurrent: 1,
-    max_per_day: spikeLike ? 1 : 5,
+    max_per_day: asia || spikeLike ? 1 : 5,
     volume_lots: 0.01,
     sl_points: spikeLike ? 500 : 1000,
     tp_points: 1000,
-    breakeven_half_tp: true,
+    breakeven_half_tp: asia ? false : true,
     breakeven_fraction: 0.5,
   };
 }
@@ -421,7 +423,12 @@ function renderPrefs() {
               p.volume_lots ?? 0.01
             )}" />
           </label>
-          <label class="field">SL points
+          ${
+            p.kind === "asia_breakout"
+              ? `<p class="muted small" style="grid-column:1/-1">SL / TP come from Reaktor (Asia box). Trail + flatten follow the alert. Lots / caps still apply.</p>
+          <input type="hidden" name="sl_points" value="${Number(p.sl_points ?? 1000)}" />
+          <input type="hidden" name="tp_points" value="${Number(p.tp_points ?? 1000)}" />`
+              : `<label class="field">SL points
             <input type="number" name="sl_points" min="1" step="1" value="${Number(
               p.sl_points ?? 1000
             )}" />
@@ -430,11 +437,16 @@ function renderPrefs() {
             <input type="number" name="tp_points" min="1" step="1" value="${Number(
               p.tp_points ?? 1000
             )}" />
-          </label>
+          </label>`
+          }
           <label class="field field-check" title="Move SL to entry when price has made this fraction of the TP distance">
             <span>Breakeven</span>
             <input type="checkbox" name="breakeven_half_tp" ${
-              p.breakeven_half_tp !== false ? "checked" : ""
+              p.kind === "asia_breakout"
+                ? ""
+                : p.breakeven_half_tp !== false
+                  ? "checked"
+                  : ""
             } />
           </label>
           <label class="field" title="Trigger BE when favorable move reaches this % of TP distance (50 = half TP)">

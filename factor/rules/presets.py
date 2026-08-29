@@ -68,6 +68,33 @@ class OrderPlan:
         }
 
 
+def _signal_sl_tp(
+    alert: AlertData,
+    *,
+    entry: float,
+    point_size: float,
+) -> tuple[Optional[float], Optional[float]]:
+    """Absolute SL/TP from Reaktor metrics when the engine sends a trade plan."""
+    metrics = alert.metrics if isinstance(alert.metrics, dict) else {}
+    sl_raw = metrics.get("sl_price")
+    tp_raw = metrics.get("tp_price")
+    if sl_raw is None or tp_raw is None:
+        return None, None
+    try:
+        sl = float(sl_raw)
+        tp = float(tp_raw)
+    except (TypeError, ValueError):
+        return None, None
+    if sl <= 0 or tp <= 0:
+        return None, None
+    # Reject inverted / zero-distance plans
+    if abs(entry - sl) < (point_size or 0) * 0.5:
+        return None, None
+    if abs(tp - entry) < (point_size or 0) * 0.5:
+        return None, None
+    return sl, tp
+
+
 def _side_to_action(side: str) -> str:
     if side == "UP":
         return "BUY"
@@ -125,13 +152,21 @@ def build_order_plan(
     volume = float(preset.get("volume_lots") or 0.01)
     broker_symbol = str(preset.get("broker_symbol") or alert.symbol.replace("/", ""))
     entry = float(alert.price)
-    sl, tp = calc_sl_tp(
-        action=action,
-        entry=entry,
-        sl_points=sl_points,
-        tp_points=tp_points,
-        point_size=point_size,
-    )
+    sl, tp = _signal_sl_tp(alert, entry=entry, point_size=point_size)
+    if sl is None or tp is None:
+        sl, tp = calc_sl_tp(
+            action=action,
+            entry=entry,
+            sl_points=sl_points,
+            tp_points=tp_points,
+            point_size=point_size,
+        )
+    else:
+        if point_size > 0:
+            sl_points = abs(entry - sl) / point_size
+            tp_points = abs(tp - entry) / point_size
+    sl = round_price(float(sl), point_size)
+    tp = round_price(float(tp), point_size)
     return OrderPlan(
         symbol=alert.symbol,
         broker_symbol=broker_symbol,

@@ -17,6 +17,7 @@ from factor.inbound.models import AlertData
 from factor.rules.filter import alert_age_seconds, alert_triggered_at, market_open_blackout
 from factor.rules.presets import build_order_plan
 from factor.services.breakeven import build_breakeven_order_detail
+from factor.services.protect import protect_detail_from_metrics
 
 
 def _pref_overrides(pref: Dict[str, Any]) -> Dict[str, Any]:
@@ -199,7 +200,21 @@ def process_alert_for_user(
                 "broker_message": result.message,
                 "broker_detail": result.detail,
                 "ok": result.ok,
-                "breakeven": build_breakeven_order_detail(plan=plan, pref=pref),
+                "breakeven": build_breakeven_order_detail(
+                    plan=plan,
+                    pref=pref,
+                    enabled=False if alert.kind == "asia_breakout" else None,
+                ),
+                **(
+                    {
+                        "protect": protect_detail_from_metrics(
+                            alert.metrics,
+                            triggered_at=alert.triggered_at,
+                        )
+                    }
+                    if alert.kind == "asia_breakout"
+                    else {}
+                ),
             },
         )
         order_id = order_row.get("id")

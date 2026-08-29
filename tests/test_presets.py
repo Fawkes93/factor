@@ -44,3 +44,30 @@ def test_build_order_plan_buy():
     assert plan.sl_price == 3990.0
     assert plan.tp_price == 4010.0
     assert plan.broker_symbol == "XAUUSD"
+
+
+def test_build_order_plan_uses_asia_metrics_sl_tp():
+    alert = AlertData(
+        alert_id=42,
+        kind="asia_breakout",
+        symbol="XAU/USD",
+        side="UP",
+        price=3310.0,
+        timeframe_min=15,
+        metrics={
+            "sl_price": 3300.0,
+            "tp_price": 3340.0,
+            "sl_pts": 1000,
+            "tp_pts": 3000,
+            "trail_arm_pts": 400,
+            "trail_pts": 500,
+        },
+    )
+    plan = build_order_plan(alert, overrides={"volume_lots": 0.02})
+    assert plan.side == "BUY"
+    assert plan.volume_lots == 0.02
+    assert plan.sl_price == 3300.0
+    assert plan.tp_price == 3340.0
+    assert plan.sl_points == 1000
+    assert plan.tp_points == 3000
+    assert plan.kind == "asia_breakout"

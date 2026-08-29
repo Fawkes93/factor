@@ -326,6 +326,24 @@ class CTraderBroker:
             with self._new_client() as client:
                 return client.get_spot(broker_symbol)
 
+    def close_position(self, *, position_id: int, volume: int) -> Dict[str, Any]:
+        if not self.configured():
+            raise CTraderError("cTrader not configured")
+        if self._dry_run:
+            print(f"🛑 dry_run close pos={position_id} vol={volume}")
+            return {
+                "dry_run": True,
+                "position_id": position_id,
+                "volume": volume,
+            }
+        with self._lock:
+            with self._new_client() as client:
+                body = client.close_position(
+                    position_id=int(position_id), volume=int(volume)
+                )
+            self._bump_open_cache()
+            return body
+
     def amend_position_sl_tp(
         self,
         *,
@@ -367,6 +385,9 @@ class _DryRunSession:
 
     def get_spot(self, broker_symbol: str) -> Dict[str, float]:
         raise CTraderError("dry_run has no spots")
+
+    def close_position(self, *, position_id: int, volume: int) -> Dict[str, Any]:
+        return {"dry_run": True, "position_id": position_id, "volume": volume}
 
     def amend_position_sl_tp(
         self,
@@ -419,6 +440,14 @@ class _LiveSession:
             position_id=position_id,
             stop_loss=stop_loss,
             take_profit=take_profit,
+        )
+        if self._on_amend:
+            self._on_amend()
+        return body
+
+    def close_position(self, *, position_id: int, volume: int) -> Dict[str, Any]:
+        body = self._client.close_position(
+            position_id=int(position_id), volume=int(volume)
         )
         if self._on_amend:
             self._on_amend()
