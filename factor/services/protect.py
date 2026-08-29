@@ -29,9 +29,9 @@ def protect_detail_from_metrics(
         "trail_pts": float(m.get("trail_pts") or 0),
         "trail_armed": False,
         "best_price": None,
-        "flatten_hour": int(m.get("flatten_hour") or 21),
+        "flatten_hour": int(m.get("flatten_hour") or 22),
         "flatten_tz": str(m.get("flatten_tz") or "Europe/Bucharest"),
-        "max_hold_hours": float(m.get("max_hold_hours") or 13),
+        "max_hold_hours": float(m.get("max_hold_hours") or 14),
         "entry_at": triggered_at,
         "flattened": False,
     }
@@ -80,7 +80,7 @@ def flatten_due(
     entry_at: Optional[datetime],
     flatten_hour: int,
     tz_name: str = "Europe/Bucharest",
-    max_hold_hours: float = 13.0,
+    max_hold_hours: float = 14.0,
 ) -> Optional[str]:
     """Return reason if the position should be flattened, else None."""
     if now.tzinfo is None:
@@ -197,9 +197,9 @@ def process_open_order_for_protect(
     reason = flatten_due(
         now,
         entry_at=entry_at,
-        flatten_hour=int(prot.get("flatten_hour") or 21),
+        flatten_hour=int(prot.get("flatten_hour") or 22),
         tz_name=str(prot.get("flatten_tz") or "Europe/Bucharest"),
-        max_hold_hours=float(prot.get("max_hold_hours") or 13),
+        max_hold_hours=float(prot.get("max_hold_hours") or 14),
     )
     pos_id = int(pos["position_id"])
     side = str(order.get("side") or pos.get("side") or "BUY")
