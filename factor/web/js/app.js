@@ -425,7 +425,7 @@ function renderPrefs() {
           </label>
           ${
             p.kind === "asia_breakout"
-              ? `<p class="muted small" style="grid-column:1/-1">SL / TP come from Reaktor (Asia box). Trail + flatten follow the alert. Lots / caps still apply.</p>
+              ? `<p class="muted small" style="grid-column:1/-1">SL / TP come from Reaktor (Asia box). Trail + flatten follow the alert — no breakeven. Lots / caps still apply.</p>
           <input type="hidden" name="sl_points" value="${Number(p.sl_points ?? 1000)}" />
           <input type="hidden" name="tp_points" value="${Number(p.tp_points ?? 1000)}" />`
               : `<label class="field">SL points
@@ -437,16 +437,11 @@ function renderPrefs() {
             <input type="number" name="tp_points" min="1" step="1" value="${Number(
               p.tp_points ?? 1000
             )}" />
-          </label>`
-          }
+          </label>
           <label class="field field-check" title="Move SL to entry when price has made this fraction of the TP distance">
             <span>Breakeven</span>
             <input type="checkbox" name="breakeven_half_tp" ${
-              p.kind === "asia_breakout"
-                ? ""
-                : p.breakeven_half_tp !== false
-                  ? "checked"
-                  : ""
+              p.breakeven_half_tp !== false ? "checked" : ""
             } />
           </label>
           <label class="field" title="Trigger BE when favorable move reaches this % of TP distance (50 = half TP)">
@@ -454,7 +449,8 @@ function renderPrefs() {
             <input type="number" name="breakeven_pct" min="1" max="100" step="1" value="${beFractionToPercent(
               p.breakeven_fraction ?? 0.5
             )}" />
-          </label>
+          </label>`
+          }
         </div>
       </div>`;
     })
@@ -469,6 +465,11 @@ function renderPrefs() {
       const lab = card.querySelector(".toggle-label");
       if (lab) lab.textContent = on ? "On" : "Off";
     };
+
+    card.querySelector('[name="kind"]').addEventListener("change", () => {
+      collectPrefsFromDom();
+      renderPrefs();
+    });
 
     card.querySelector('[name="enabled"]').addEventListener("change", async () => {
       if (prefsSaving) return;
@@ -525,10 +526,12 @@ function collectPrefsFromDom() {
     const i = Number(card.dataset.i);
     if (!prefsDraft[i]) return;
     const g = (name) => card.querySelector(`[name="${name}"]`);
+    const kind = g("kind").value.trim();
+    const asia = kind === "asia_breakout";
     const beEl = g("breakeven_half_tp");
     const bePctEl = g("breakeven_pct");
     prefsDraft[i] = {
-      kind: g("kind").value.trim(),
+      kind,
       symbol: g("symbol").value.trim(),
       enabled: g("enabled").checked,
       max_concurrent: Number(g("max_concurrent").value),
@@ -536,7 +539,7 @@ function collectPrefsFromDom() {
       volume_lots: Number(g("volume_lots").value),
       sl_points: Number(g("sl_points").value),
       tp_points: Number(g("tp_points").value),
-      breakeven_half_tp: beEl ? beEl.checked : true,
+      breakeven_half_tp: asia ? false : beEl ? beEl.checked : true,
       breakeven_fraction: bePctEl
         ? bePercentToFraction(bePctEl.value)
         : Number(prefsDraft[i].breakeven_fraction) || 0.5,

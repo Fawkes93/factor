@@ -233,3 +233,31 @@ def test_replace_does_not_wipe_other_account(monkeypatch):
     )
     assert repos.list_prefs(uid, 11)[0]["symbol"] == "EUR/USD"
     assert repos.list_prefs(uid, 22)[0]["kind"] == "spike"
+
+
+def test_asia_breakout_forces_breakeven_off(monkeypatch):
+    from factor.db import repos
+    from factor.db import client as db_client
+
+    fake = _FakeSB()
+    monkeypatch.setattr(db_client, "_client", fake)
+    monkeypatch.setattr(repos, "get_supabase", lambda: fake)
+
+    uid = "user-prefs-asia"
+    saved = repos.replace_prefs_for_user(
+        uid,
+        [
+            {
+                "kind": "asia_breakout",
+                "symbol": "XAU/USD",
+                "enabled": True,
+                "breakeven_half_tp": True,
+                "breakeven_fraction": 0.9,
+            }
+        ],
+        account_id=1001,
+    )
+    assert len(saved) == 1
+    assert saved[0]["breakeven_half_tp"] is False
+    listed = repos.list_prefs(uid, 1001)
+    assert listed[0]["breakeven_half_tp"] is False

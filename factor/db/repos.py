@@ -489,7 +489,9 @@ def list_prefs(
     rows = []
     for r in res.data or []:
         row = dict(r)
-        if "breakeven_half_tp" not in row:
+        if row.get("kind") == "asia_breakout":
+            row["breakeven_half_tp"] = False
+        elif "breakeven_half_tp" not in row:
             row["breakeven_half_tp"] = True
         if row.get("breakeven_fraction") is None:
             row["breakeven_fraction"] = 0.5
@@ -529,6 +531,8 @@ def upsert_pref(
     sb = get_supabase()
     kind = str(kind).strip()
     symbol = str(symbol).strip()
+    if kind == "asia_breakout":
+        breakeven_half_tp = False
     be_frac = _normalize_breakeven_fraction(breakeven_fraction, 0.5)
     account_id = int(account_id)
     base = {
