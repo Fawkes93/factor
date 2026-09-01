@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterator, Optional
 from factor import config
 from factor.broker.base import OrderResult
 from factor.broker.ctrader_client import CTraderClient, CTraderError
-from factor.rules.presets import OrderPlan, resolve_preset
+from factor.rules.presets import OrderPlan, price_decimals, resolve_preset
 
 
 def lots_to_protocol_volume(lots: float, lot_units: float) -> int:
@@ -31,9 +31,20 @@ def lots_to_protocol_volume(lots: float, lot_units: float) -> int:
     return vol
 
 
-def price_distance_to_relative(distance: float) -> int:
-    """relativeStopLoss/TP = price distance × 100_000."""
-    rel = int(round(abs(float(distance)) * 100_000))
+def price_distance_to_relative(distance: float, point_size: float = 0.01) -> int:
+    """
+    relativeStopLoss/TP = price distance × 100_000.
+
+    Round the distance to symbol digits *before* scaling. Scaling a messy
+    float first (e.g. |3456.789 − 3466.79| → 1_000_100) is rejected as
+    'Relative stop loss has invalid precision' on 2-digit XAU.
+    """
+    digits = price_decimals(point_size)
+    dist = round(abs(float(distance)), digits)
+    rel = int(round(dist * 100_000))
+    step = max(1, int(round(abs(float(point_size)) * 100_000)))
+    if step > 1:
+        rel = int(round(rel / step)) * step
     if rel <= 0:
         raise ValueError(f"relative distance too small: {distance}")
     return rel
@@ -164,8 +175,8 @@ class CTraderBroker:
             volume = lots_to_protocol_volume(plan.volume_lots, lot_units)
             sl_dist = abs(plan.entry_price - plan.sl_price)
             tp_dist = abs(plan.tp_price - plan.entry_price)
-            rel_sl = price_distance_to_relative(sl_dist)
-            rel_tp = price_distance_to_relative(tp_dist)
+            rel_sl = price_distance_to_relative(sl_dist, plan.point_size)
+            rel_tp = price_distance_to_relative(tp_dist, plan.point_size)
         except Exception as e:
             return OrderResult(
                 ok=False,

@@ -151,7 +151,9 @@ def build_order_plan(
     tp_points = float(preset["tp_points"])
     volume = float(preset.get("volume_lots") or 0.01)
     broker_symbol = str(preset.get("broker_symbol") or alert.symbol.replace("/", ""))
-    entry = float(alert.price)
+    # Round entry first so SL/TP distances land on symbol digits (cTrader
+    # relativeStopLoss rejects leftover alert-price decimals on XAU).
+    entry = round_price(float(alert.price), point_size)
     sl, tp = _signal_sl_tp(alert, entry=entry, point_size=point_size)
     if sl is None or tp is None:
         sl, tp = calc_sl_tp(

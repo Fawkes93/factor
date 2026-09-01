@@ -46,6 +46,29 @@ def test_build_order_plan_buy():
     assert plan.broker_symbol == "XAUUSD"
 
 
+def test_build_order_plan_rounds_entry_to_symbol_digits():
+    """Candle SL/TP from a messy Reaktor price must still be 2-digit XAU."""
+    alert = AlertData(
+        alert_id=11,
+        kind="candle",
+        symbol="XAU/USD",
+        side="DOWN",
+        price=3456.789,
+        timeframe_min=15,
+    )
+    plan = build_order_plan(alert)
+    assert plan.entry_price == 3456.79
+    assert plan.sl_price == 3466.79
+    assert plan.tp_price == 3446.79
+    from factor.broker.ctrader import price_distance_to_relative
+
+    rel = price_distance_to_relative(
+        abs(plan.entry_price - plan.sl_price), plan.point_size
+    )
+    assert rel == 1_000_000
+    assert rel % 1000 == 0
+
+
 def test_build_order_plan_uses_asia_metrics_sl_tp():
     alert = AlertData(
         alert_id=42,

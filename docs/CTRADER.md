@@ -79,7 +79,7 @@ Configured in `factor/config.py` → `PRESETS`:
 | `broker_symbol` | Name on cTrader (e.g. `XAUUSD`) — must match the symbol list |
 
 cTrader protocol volume = `lots × lot_units × 100`.  
-Relative SL/TP = price distance × `100_000`.
+Relative SL/TP = price distance rounded to symbol digits × `100_000`.
 
 If the symbol name differs on IC Markets (e.g. `XAUUSD.a`), set:
 
