@@ -22,13 +22,24 @@ Static assets: `/static/css/app.css`, `/static/js/app.js`.
 
 1. Reaktor webhook verified (HMAC)  
 2. Load candidates: enabled pref for `(kind, symbol)` **on that account**, trading on, not killed, has connection  
-3. Per account: **claim** `(user_id, account_id, alert_id)` → freshness → market-open blackout → daily cap (`max_per_day` per kind on that account) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
+3. Per account: **claim** `(user_id, account_id, alert_id)` → freshness (5s, Asia breakout 20s) → market-open blackout → daily cap (`max_per_day` per kind on that account) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
 4. Background poll reconciles open `factor_orders` vs cTrader per account (marks closed when the position is gone) and may move SL to **breakeven** at half TP  
 
 One cTrader login can grant several trading accounts. Each account has its own alert prefs, orders, and kill switch. Dashboard switcher only changes which account you are looking at — fan-out still trades every account that has the pref enabled.  
 
 
 No single-tenant SQLite engine and no Reaktor catch-up trading — **webhooks only**.
+
+## Alert freshness
+
+Factor skips an alert when `triggered_at` is older than that kind's window (`alert_too_old`). The tight window is for fast signals. Asia breakout is a slower box trade, so it gets longer.
+
+| Kind | Default | Override |
+|------|---------|----------|
+| `asia_breakout` | 20s | `MAX_ALERT_AGE_ASIA_SEC` |
+| `spike`, `spike_neo`, `candle`, `impulse_retrace` | 5s | `MAX_ALERT_AGE_SEC` |
+
+`/api/health` reports both as `max_alert_age_sec` and `max_alert_age_asia_sec`. Missing or unparseable `triggered_at` still skips (`alert_age_unknown`).
 
 ## Kill switch
 

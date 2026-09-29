@@ -2,8 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 
+from factor import config
 from factor.inbound.models import AlertData
-from factor.rules.filter import alert_age_seconds, alert_triggered_at
+from factor.rules.filter import alert_age_seconds, alert_triggered_at, max_alert_age_seconds
 
 
 def _iso_ago(seconds: float) -> str:
@@ -26,6 +27,14 @@ def test_alert_age_and_triggered_at():
     age = alert_age_seconds(alert)
     assert age is not None
     assert 1.0 < age < 5.0
+
+
+def test_asia_breakout_age_limit_is_20s(monkeypatch):
+    monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
+    monkeypatch.setattr(config, "MAX_ALERT_AGE_ASIA_SEC", 20.0)
+    assert max_alert_age_seconds("asia_breakout") == 20.0
+    for kind in ("spike", "spike_neo", "candle", "impulse_retrace"):
+        assert max_alert_age_seconds(kind) == 5.0
 
 
 def test_missing_triggered_at():

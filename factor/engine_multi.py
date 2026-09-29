@@ -14,7 +14,12 @@ from factor.broker.ctrader import broker_from_connection
 from factor.crypto.tokens import decrypt_token
 from factor.db import repos
 from factor.inbound.models import AlertData
-from factor.rules.filter import alert_age_seconds, alert_triggered_at, market_open_blackout
+from factor.rules.filter import (
+    alert_age_seconds,
+    alert_triggered_at,
+    market_open_blackout,
+    max_alert_age_seconds,
+)
 from factor.rules.presets import build_order_plan
 from factor.services.breakeven import build_breakeven_order_detail
 from factor.services.protect import protect_detail_from_metrics
@@ -108,7 +113,7 @@ def process_alert_for_user(
     if alert.side == "NEUTRAL" or not alert.is_directional:
         return _skip("side_neutral")
 
-    max_age = float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5)
+    max_age = max_alert_age_seconds(alert.kind)
     if max_age > 0:
         age = alert_age_seconds(alert)
         if age is None:

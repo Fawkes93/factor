@@ -36,6 +36,7 @@ def _alert(**kwargs) -> AlertData:
 def _mu_flags(monkeypatch):
     monkeypatch.setattr(config, "TRADING_ENABLED", True)
     monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
+    monkeypatch.setattr(config, "MAX_ALERT_AGE_ASIA_SEC", 20.0)
     monkeypatch.setattr(config, "CTRADER_DRY_RUN", True)
     monkeypatch.setattr(config, "FACTOR_TOKEN_ENC_KEY", "test-enc-key-for-multi")
     monkeypatch.setattr(config, "MARKET_OPEN_BLACKOUT", False)
@@ -404,3 +405,62 @@ def test_stale_skipped(monkeypatch):
     )
     assert r["action"] == "skip"
     assert "alert_too_old" in r["reason"]
+
+
+def _age_decision(monkeypatch, *, kind: str, age_s: float, alert_id: int):
+    from factor import engine_multi
+    from factor.crypto.tokens import encrypt_token
+    from factor.db import repos
+
+    enc = encrypt_token("t", config.FACTOR_TOKEN_ENC_KEY)
+    user = {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "kill_switch": False,
+        "trading_enabled": True,
+    }
+    pref = {
+        "volume_lots": 0.01,
+        "sl_points": 1000,
+        "tp_points": 1000,
+        "max_concurrent": 1,
+        "max_per_day": 5,
+    }
+    conn = {"account_id": 1, "host": "demo.ctraderapi.com", "access_token_enc": enc}
+    monkeypatch.setattr(repos, "claim_alert", lambda *a, **k: True)
+    monkeypatch.setattr(repos, "update_processed_reason", lambda *a, **k: None)
+    monkeypatch.setattr(repos, "insert_order", lambda **k: {"id": "age"})
+    monkeypatch.setattr(repos, "count_orders_today", lambda *a, **k: 0)
+    monkeypatch.setattr(repos, "count_open_orders_db", lambda *a, **k: 0)
+
+    class FakeBroker:
+        def place_market_with_sl_tp(self, plan):
+            return OrderResult(ok=True, status="open", broker_order_id="age")
+
+    monkeypatch.setattr(
+        engine_multi, "broker_from_connection", lambda **k: FakeBroker()
+    )
+    return engine_multi.process_alert_for_user(
+        _alert(alert_id=alert_id, kind=kind, triggered_at=_iso_ago(age_s)),
+        user=user,
+        pref=pref,
+        connection=conn,
+    )
+
+
+def test_asia_breakout_accepts_age_inside_20s(monkeypatch):
+    r = _age_decision(monkeypatch, kind="asia_breakout", age_s=15, alert_id=51)
+    assert r["action"] == "traded"
+
+
+def test_asia_breakout_skips_after_20s(monkeypatch):
+    r = _age_decision(monkeypatch, kind="asia_breakout", age_s=25, alert_id=52)
+    assert r["action"] == "skip"
+    assert "alert_too_old" in r["reason"]
+    assert ">20s" in r["reason"]
+
+
+def test_spike_stays_on_5s_age_limit(monkeypatch):
+    r = _age_decision(monkeypatch, kind="spike", age_s=8, alert_id=53)
+    assert r["action"] == "skip"
+    assert "alert_too_old" in r["reason"]
+    assert ">5s" in r["reason"]

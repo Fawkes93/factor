@@ -28,6 +28,19 @@ def alert_triggered_at(alert: AlertData) -> Optional[datetime]:
         return None
 
 
+def max_alert_age_seconds(kind: str) -> float:
+    """Seconds an alert may age before it is skipped. Asia breakout is 20s."""
+    if str(kind or "").strip() == "asia_breakout":
+        raw = getattr(config, "MAX_ALERT_AGE_ASIA_SEC", 20)
+    else:
+        raw = getattr(config, "MAX_ALERT_AGE_SEC", 5)
+    try:
+        limit = float(raw if raw is not None else 0)
+    except (TypeError, ValueError):
+        limit = 5.0
+    return limit
+
+
 def alert_age_seconds(alert: AlertData) -> Optional[float]:
     """
     Seconds since alert trigger (UTC). None if timestamp missing/unparseable.

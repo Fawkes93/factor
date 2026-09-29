@@ -183,6 +183,9 @@ def create_app() -> FastAPI:
                 getattr(config, "MARKET_OPEN_BLACKOUT_MINUTES", 15) or 15
             ),
             "max_alert_age_sec": float(getattr(config, "MAX_ALERT_AGE_SEC", 5) or 5),
+            "max_alert_age_asia_sec": float(
+                getattr(config, "MAX_ALERT_AGE_ASIA_SEC", 20) or 20
+            ),
             "xau_preset": (config.PRESETS.get("XAU/USD") or {}),
             "webhook_configured": bool(config.WEBHOOK_SECRET),
             "admin_token_configured": bool(config.FACTOR_ADMIN_TOKEN),
