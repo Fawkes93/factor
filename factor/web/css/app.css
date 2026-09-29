@@ -599,6 +599,14 @@ label.field.field-check input[type="checkbox"] {
   accent-color: var(--ok);
   cursor: pointer;
 }
+label.field.field-check.field-check-row {
+  grid-column: 1 / -1;
+  padding-top: 4px;
+}
+.pref-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 
 .code {
   margin-top: 14px;

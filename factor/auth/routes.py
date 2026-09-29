@@ -291,7 +291,7 @@ async def put_prefs(request: Request):
     """
     Replace/upsert alert prefs.
     Body: { "prefs": [ { kind, symbol, enabled, max_concurrent, max_per_day,
-                          volume_lots, sl_points, tp_points }, ... ] }
+                          volume_lots, sl_points, tp_points, sl_tp_override }, ... ] }
     """
     uid = _require_user_id(request)
     conn = _selected_connection(uid)

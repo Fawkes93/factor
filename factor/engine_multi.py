@@ -20,12 +20,17 @@ from factor.services.breakeven import build_breakeven_order_detail
 from factor.services.protect import protect_detail_from_metrics
 
 
-def _pref_overrides(pref: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+def _pref_overrides(pref: Dict[str, Any], *, kind: str = "") -> Dict[str, Any]:
+    ov: Dict[str, Any] = {
         "volume_lots": float(pref.get("volume_lots") or 0.01),
         "sl_points": int(pref.get("sl_points") or 1000),
         "tp_points": int(pref.get("tp_points") or 1000),
     }
+    # Only Asia breakout takes absolute SL/TP from the alert. Override
+    # replaces those prices with this pref's points. Other kinds are unchanged.
+    if kind == "asia_breakout" and bool(pref.get("sl_tp_override")):
+        ov["ignore_signal_sl_tp"] = True
+    return ov
 
 
 def process_alert_for_user(
@@ -167,7 +172,9 @@ def process_alert_for_user(
 
     # 7) Plan + place
     try:
-        plan = build_order_plan(alert, overrides=_pref_overrides(pref))
+        plan = build_order_plan(
+            alert, overrides=_pref_overrides(pref, kind=alert.kind)
+        )
     except Exception as e:
         return _skip(f"plan_error:{e}", status="error")
 

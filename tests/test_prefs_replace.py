@@ -259,5 +259,111 @@ def test_asia_breakout_forces_breakeven_off(monkeypatch):
     )
     assert len(saved) == 1
     assert saved[0]["breakeven_half_tp"] is False
+    assert saved[0]["sl_tp_override"] is False
     listed = repos.list_prefs(uid, 1001)
     assert listed[0]["breakeven_half_tp"] is False
+    assert listed[0]["sl_tp_override"] is False
+
+
+def test_asia_sl_tp_override_persists_and_keeps_breakeven_off(monkeypatch):
+    from factor.db import repos
+    from factor.db import client as db_client
+
+    fake = _FakeSB()
+    monkeypatch.setattr(db_client, "_client", fake)
+    monkeypatch.setattr(repos, "get_supabase", lambda: fake)
+
+    uid = "user-prefs-asia-override"
+    saved = repos.replace_prefs_for_user(
+        uid,
+        [
+            {
+                "kind": "asia_breakout",
+                "symbol": "XAU/USD",
+                "enabled": True,
+                "sl_points": 800,
+                "tp_points": 1600,
+                "sl_tp_override": True,
+                "breakeven_half_tp": True,
+            },
+            {
+                "kind": "candle",
+                "symbol": "EUR/USD",
+                "enabled": True,
+                "sl_tp_override": True,
+            },
+        ],
+        account_id=1001,
+    )
+    asia = next(r for r in saved if r["kind"] == "asia_breakout")
+    candle = next(r for r in saved if r["kind"] == "candle")
+    assert asia["sl_tp_override"] is True
+    assert asia["breakeven_half_tp"] is False
+    assert asia["sl_points"] == 800
+    assert asia["tp_points"] == 1600
+    assert candle["sl_tp_override"] is False
+
+    listed = repos.list_prefs(uid, 1001)
+    asia_l = next(r for r in listed if r["kind"] == "asia_breakout")
+    candle_l = next(r for r in listed if r["kind"] == "candle")
+    assert asia_l["sl_tp_override"] is True
+    assert asia_l["breakeven_half_tp"] is False
+    assert candle_l["sl_tp_override"] is False
+
+
+def test_asia_override_errors_until_column_exists(monkeypatch):
+    """Saving override=true must not pretend it stuck when the column is missing."""
+    import pytest
+
+    from factor.db import repos
+    from factor.db import client as db_client
+
+    class _NoOverrideSB(_FakeSB):
+        def table(self, name):
+            q = super().table(name)
+            orig = q.execute
+
+            def execute():
+                payload = q._payload
+                if isinstance(payload, dict) and "sl_tp_override" in payload:
+                    raise RuntimeError("column sl_tp_override does not exist")
+                return orig()
+
+            q.execute = execute
+            return q
+
+    fake = _NoOverrideSB()
+    monkeypatch.setattr(db_client, "_client", fake)
+    monkeypatch.setattr(repos, "get_supabase", lambda: fake)
+
+    uid = "user-prefs-asia-nomig"
+    with pytest.raises(repos.PrefSchemaError, match="006_sl_tp_override"):
+        repos.replace_prefs_for_user(
+            uid,
+            [
+                {
+                    "kind": "asia_breakout",
+                    "symbol": "XAU/USD",
+                    "enabled": True,
+                    "sl_tp_override": True,
+                    "sl_points": 400,
+                    "tp_points": 800,
+                }
+            ],
+            account_id=1001,
+        )
+
+    saved = repos.replace_prefs_for_user(
+        uid,
+        [
+            {
+                "kind": "asia_breakout",
+                "symbol": "EUR/USD",
+                "enabled": True,
+                "sl_tp_override": False,
+            }
+        ],
+        account_id=1001,
+    )
+    assert saved[0]["sl_tp_override"] is False
+    assert saved[0]["breakeven_half_tp"] is False

@@ -141,10 +141,14 @@ def build_order_plan(
     """
     Build SL/TP plan. Optional overrides (from user prefs): volume_lots,
     sl_points, tp_points, broker_symbol, point_size, lot_units.
+    ignore_signal_sl_tp skips Reaktor absolute SL/TP (Asia breakout override).
     """
+    ov = dict(overrides or {})
+    # Asia breakout override: user's points win over Reaktor absolute prices.
+    ignore_signal = bool(ov.pop("ignore_signal_sl_tp", False))
     preset = resolve_preset(alert.symbol, alert.kind)
-    if overrides:
-        preset.update({k: v for k, v in overrides.items() if v is not None})
+    if ov:
+        preset.update({k: v for k, v in ov.items() if v is not None})
     action = _side_to_action(alert.side)
     point_size = float(preset["point_size"])
     sl_points = float(preset["sl_points"])
@@ -154,7 +158,9 @@ def build_order_plan(
     # Round entry first so SL/TP distances land on symbol digits (cTrader
     # relativeStopLoss rejects leftover alert-price decimals on XAU).
     entry = round_price(float(alert.price), point_size)
-    sl, tp = _signal_sl_tp(alert, entry=entry, point_size=point_size)
+    sl, tp = (None, None)
+    if not ignore_signal:
+        sl, tp = _signal_sl_tp(alert, entry=entry, point_size=point_size)
     if sl is None or tp is None:
         sl, tp = calc_sl_tp(
             action=action,

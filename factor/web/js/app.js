@@ -242,6 +242,7 @@ function newPref(kind = "candle") {
     tp_points: 1000,
     breakeven_half_tp: asia ? false : true,
     breakeven_fraction: 0.5,
+    sl_tp_override: false,
   };
 }
 
@@ -312,6 +313,11 @@ function validatePrefs(prefs) {
       const labels = ALERT_SYMBOLS.map((s) => s.label).join(", ");
       return `Unknown symbol “${p.symbol}”. Choose ${labels}.`;
     }
+    if (p.kind === "asia_breakout" && p.sl_tp_override) {
+      if (!(Number(p.sl_points) > 0) || !(Number(p.tp_points) > 0)) {
+        return "Asia breakout override needs SL and TP points greater than 0.";
+      }
+    }
     const k = `${p.kind}|${p.symbol}`;
     if (keys.has(k)) {
       return `Duplicate alert: ${p.kind} / ${symbolLabel(p.symbol)}`;
@@ -351,6 +357,32 @@ async function persistPrefs(prefs, { quiet = false } = {}) {
   } finally {
     prefsSaving = false;
   }
+}
+
+/** Asia breakout risk: Reaktor box unless the user overrides with their own points. */
+function asiaRiskFields(p) {
+  const override = !!p.sl_tp_override;
+  const sl = Number(p.sl_points ?? 1000);
+  const tp = Number(p.tp_points ?? 1000);
+  const note = override
+    ? "Your SL / TP points replace the Reaktor Asia box. Trail + flatten still follow the alert — no breakeven."
+    : "SL / TP come from Reaktor (Asia box). Trail + flatten follow the alert — no breakeven. Lots / caps still apply.";
+  const points = override
+    ? `<label class="field">SL points
+            <input type="number" name="sl_points" min="1" step="1" value="${sl}" />
+          </label>
+          <label class="field">TP points
+            <input type="number" name="tp_points" min="1" step="1" value="${tp}" />
+          </label>`
+    : `<input type="hidden" name="sl_points" value="${sl}" />
+          <input type="hidden" name="tp_points" value="${tp}" />`;
+  return `
+          <label class="field field-check field-check-row" title="Use your SL and TP points instead of the Reaktor Asia box">
+            <span>Override SL / TP</span>
+            <input type="checkbox" name="sl_tp_override" ${override ? "checked" : ""} />
+          </label>
+          ${points}
+          <p class="muted small pref-note">${note}</p>`;
 }
 
 function renderPrefs() {
@@ -425,9 +457,7 @@ function renderPrefs() {
           </label>
           ${
             p.kind === "asia_breakout"
-              ? `<p class="muted small" style="grid-column:1/-1">SL / TP come from Reaktor (Asia box). Trail + flatten follow the alert — no breakeven. Lots / caps still apply.</p>
-          <input type="hidden" name="sl_points" value="${Number(p.sl_points ?? 1000)}" />
-          <input type="hidden" name="tp_points" value="${Number(p.tp_points ?? 1000)}" />`
+              ? asiaRiskFields(p)
               : `<label class="field">SL points
             <input type="number" name="sl_points" min="1" step="1" value="${Number(
               p.sl_points ?? 1000
@@ -470,6 +500,14 @@ function renderPrefs() {
       collectPrefsFromDom();
       renderPrefs();
     });
+
+    const overrideEl = card.querySelector('[name="sl_tp_override"]');
+    if (overrideEl) {
+      overrideEl.addEventListener("change", () => {
+        collectPrefsFromDom();
+        renderPrefs();
+      });
+    }
 
     card.querySelector('[name="enabled"]').addEventListener("change", async () => {
       if (prefsSaving) return;
@@ -530,6 +568,7 @@ function collectPrefsFromDom() {
     const asia = kind === "asia_breakout";
     const beEl = g("breakeven_half_tp");
     const bePctEl = g("breakeven_pct");
+    const overrideEl = g("sl_tp_override");
     prefsDraft[i] = {
       kind,
       symbol: g("symbol").value.trim(),
@@ -543,6 +582,7 @@ function collectPrefsFromDom() {
       breakeven_fraction: bePctEl
         ? bePercentToFraction(bePctEl.value)
         : Number(prefsDraft[i].breakeven_fraction) || 0.5,
+      sl_tp_override: asia && overrideEl ? overrideEl.checked : false,
     };
   });
   return prefsDraft.slice();

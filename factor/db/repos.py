@@ -491,12 +491,42 @@ def list_prefs(
         row = dict(r)
         if row.get("kind") == "asia_breakout":
             row["breakeven_half_tp"] = False
-        elif "breakeven_half_tp" not in row:
-            row["breakeven_half_tp"] = True
+            row["sl_tp_override"] = bool(row.get("sl_tp_override"))
+        else:
+            if "breakeven_half_tp" not in row:
+                row["breakeven_half_tp"] = True
+            row["sl_tp_override"] = False
         if row.get("breakeven_fraction") is None:
             row["breakeven_fraction"] = 0.5
         rows.append(row)
     return rows
+
+
+class PrefSchemaError(RuntimeError):
+    """A requested preference cannot be stored (database migration not applied)."""
+
+
+def _echo_pref_row(
+    row: Dict[str, Any],
+    *,
+    breakeven_half_tp: bool,
+    be_frac: float,
+    sl_tp_override: bool,
+) -> Dict[str, Any]:
+    row = dict(row)
+    if "breakeven_half_tp" not in row:
+        row["breakeven_half_tp"] = bool(breakeven_half_tp)
+    if row.get("breakeven_fraction") is None:
+        row["breakeven_fraction"] = be_frac
+    if "sl_tp_override" not in row:
+        if sl_tp_override:
+            raise PrefSchemaError(
+                "SL/TP override is not stored yet. Run sql/006_sl_tp_override.sql in Supabase, then save again."
+            )
+        row["sl_tp_override"] = False
+    else:
+        row["sl_tp_override"] = bool(row.get("sl_tp_override"))
+    return row
 
 
 def _normalize_breakeven_fraction(raw: Any, default: float = 0.5) -> float:
@@ -522,6 +552,7 @@ def upsert_pref(
     tp_points: int = 1000,
     breakeven_half_tp: bool = True,
     breakeven_fraction: float = 0.5,
+    sl_tp_override: bool = False,
     account_id: int,
 ) -> Dict[str, Any]:
     """
@@ -533,7 +564,11 @@ def upsert_pref(
     symbol = str(symbol).strip()
     if kind == "asia_breakout":
         breakeven_half_tp = False
+    else:
+        # Override only changes Asia breakout (Reaktor box vs user points).
+        sl_tp_override = False
     be_frac = _normalize_breakeven_fraction(breakeven_fraction, 0.5)
+    sl_tp_override = bool(sl_tp_override)
     account_id = int(account_id)
     base = {
         "user_id": user_id,
@@ -547,8 +582,14 @@ def upsert_pref(
         "sl_points": int(sl_points),
         "tp_points": int(tp_points),
     }
-    # Prefer full BE columns; fall back if migrations not applied yet
+    # Prefer full columns; fall back if migrations not applied yet
     payloads = [
+        {
+            **base,
+            "breakeven_half_tp": bool(breakeven_half_tp),
+            "breakeven_fraction": be_frac,
+            "sl_tp_override": sl_tp_override,
+        },
         {
             **base,
             "breakeven_half_tp": bool(breakeven_half_tp),
@@ -575,22 +616,23 @@ def upsert_pref(
                 res = sb.table(T_PREFS).update(payload).eq("id", pref_id).execute()
                 if not res.data:
                     raise RuntimeError("update pref failed")
-                # echo BE into response if column missing so UI still shows choice
-                row = dict(res.data[0])
-                if "breakeven_half_tp" not in row:
-                    row["breakeven_half_tp"] = bool(breakeven_half_tp)
-                if row.get("breakeven_fraction") is None:
-                    row["breakeven_fraction"] = be_frac
-                return row
+                return _echo_pref_row(
+                    res.data[0],
+                    breakeven_half_tp=bool(breakeven_half_tp),
+                    be_frac=be_frac,
+                    sl_tp_override=sl_tp_override,
+                )
             res = sb.table(T_PREFS).insert(payload).execute()
             if not res.data:
                 raise RuntimeError("insert pref failed")
-            row = dict(res.data[0])
-            if "breakeven_half_tp" not in row:
-                row["breakeven_half_tp"] = bool(breakeven_half_tp)
-            if row.get("breakeven_fraction") is None:
-                row["breakeven_fraction"] = be_frac
-            return row
+            return _echo_pref_row(
+                res.data[0],
+                breakeven_half_tp=bool(breakeven_half_tp),
+                be_frac=be_frac,
+                sl_tp_override=sl_tp_override,
+            )
+        except PrefSchemaError:
+            raise
         except Exception as e:
             last_err = e
             continue
@@ -650,6 +692,7 @@ def replace_prefs_for_user(
             tp_points=int(raw.get("tp_points") or 1000),
             breakeven_half_tp=bool(be_raw),
             breakeven_fraction=_normalize_breakeven_fraction(be_frac, 0.5),
+            sl_tp_override=bool(raw.get("sl_tp_override", False)),
         )
         saved.append(row)
     return saved
