@@ -1,9 +1,10 @@
 """
-Post-entry management for Asia breakout (trail + flatten).
+Post-entry management for session alerts (trail + flatten).
 
-Reaktor sends trail_arm_pts / trail_pts / flatten_hour / max_hold_hours
-on the alert. Factor stores them on factor_orders.detail.protect and
-amends / closes from the existing position poll.
+Asia breakout, Asia Overnight H, and Dawn Cross send flatten_hour (and
+Asia also sends trail distances) on the webhook. Factor stores them on
+factor_orders.detail.protect and amends / closes from the position poll.
+flatten_hour 0 means no clock flatten (hold for SL/TP, or max_hold if set).
 """
 
 from __future__ import annotations
@@ -16,22 +17,48 @@ from factor.rules.presets import round_price
 from factor.services.breakeven import favorable_distance
 
 
+def _session_defaults(kind: str) -> tuple[int, float, str]:
+    """(flatten_hour, max_hold_hours, timezone) when the webhook omits them.
+
+    Dawn Cross uses flatten 0 (off) unless Reaktor sends an hour. Asia
+    keeps the previous 22:00 / 14h Bucharest fallback.
+    """
+    if str(kind or "").strip() == "dawn_cross":
+        return 0, 0.0, "Europe/Chisinau"
+    return 22, 14.0, "Europe/Bucharest"
+
+
+def _metric_number(metrics: Dict[str, Any], key: str, default: float) -> float:
+    if key not in metrics:
+        return float(default)
+    raw = metrics.get(key)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def protect_detail_from_metrics(
     metrics: Optional[Dict[str, Any]],
     *,
     triggered_at: Optional[str] = None,
+    kind: str = "asia_breakout",
 ) -> Dict[str, Any]:
     m = metrics if isinstance(metrics, dict) else {}
+    default_hour, default_hold, default_tz = _session_defaults(kind)
+    hour = int(_metric_number(m, "flatten_hour", default_hour))
     return {
         "enabled": True,
-        "kind": "asia_breakout",
+        "kind": str(kind or "asia_breakout"),
         "trail_arm_pts": float(m.get("trail_arm_pts") or 0),
         "trail_pts": float(m.get("trail_pts") or 0),
         "trail_armed": False,
         "best_price": None,
-        "flatten_hour": int(m.get("flatten_hour") or 22),
-        "flatten_tz": str(m.get("flatten_tz") or "Europe/Bucharest"),
-        "max_hold_hours": float(m.get("max_hold_hours") or 14),
+        "flatten_hour": hour,
+        "flatten_tz": str(m.get("flatten_tz") or default_tz),
+        "max_hold_hours": _metric_number(m, "max_hold_hours", default_hold),
         "entry_at": triggered_at,
         "flattened": False,
     }
@@ -82,7 +109,12 @@ def flatten_due(
     tz_name: str = "Europe/Bucharest",
     max_hold_hours: float = 14.0,
 ) -> Optional[str]:
-    """Return reason if the position should be flattened, else None."""
+    """Return reason if the position should be flattened, else None.
+
+    Clock flatten is the flatten hour on the entry's local date. A check
+    that misses 23:00 still closes after midnight, because the deadline
+    stays on that entry date. Hour 0 (or outside 1–23) turns the clock off.
+    """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     now = now.astimezone(timezone.utc)
@@ -90,11 +122,21 @@ def flatten_due(
         tz = ZoneInfo(tz_name or "Europe/Bucharest")
     except Exception:
         tz = ZoneInfo("Europe/Bucharest")
-    local = now.astimezone(tz)
-    if 0 <= int(flatten_hour) <= 23:
-        flat_local = datetime.combine(local.date(), time(int(flatten_hour), 0), tzinfo=tz)
-        if local >= flat_local:
-            return f"flatten_hour:{int(flatten_hour):02d}:00 {tz_name}"
+    hour = int(flatten_hour)
+    if 1 <= hour <= 23:
+        if entry_at is not None:
+            anchor = entry_at
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=timezone.utc)
+            anchor_local = anchor.astimezone(tz)
+            deadline = datetime.combine(
+                anchor_local.date(), time(hour, 0), tzinfo=tz
+            )
+        else:
+            local = now.astimezone(tz)
+            deadline = datetime.combine(local.date(), time(hour, 0), tzinfo=tz)
+        if now >= deadline.astimezone(timezone.utc):
+            return f"flatten_hour:{hour:02d}:00 {tz_name}"
     if entry_at is not None and max_hold_hours > 0:
         if entry_at.tzinfo is None:
             entry_at = entry_at.replace(tzinfo=timezone.utc)
@@ -176,13 +218,14 @@ def process_open_order_for_protect(
     *,
     broker: Any,
     pos: Dict[str, Any],
-    mark: float,
+    mark: Optional[float],
     point_size: float,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    Flatten or trail one open asia_breakout order.
-    Caller has already matched `pos` and fetched `mark`.
+    Flatten or trail one open session order.
+    Caller has already matched `pos`. `mark` may be missing; flatten
+    still runs, and the trail waits for a quote.
     """
     from factor.db import repos
 
@@ -194,12 +237,16 @@ def process_open_order_for_protect(
 
     now = now or datetime.now(timezone.utc)
     entry_at = _parse_iso(prot.get("entry_at")) or _parse_iso(order.get("created_at"))
+    raw_hour = prot.get("flatten_hour")
+    flatten_hour = 22 if raw_hour is None or raw_hour == "" else int(raw_hour)
+    raw_hold = prot.get("max_hold_hours")
+    max_hold = 14.0 if raw_hold is None or raw_hold == "" else float(raw_hold)
     reason = flatten_due(
         now,
         entry_at=entry_at,
-        flatten_hour=int(prot.get("flatten_hour") or 22),
+        flatten_hour=flatten_hour,
         tz_name=str(prot.get("flatten_tz") or "Europe/Bucharest"),
-        max_hold_hours=float(prot.get("max_hold_hours") or 14),
+        max_hold_hours=max_hold,
     )
     pos_id = int(pos["position_id"])
     side = str(order.get("side") or pos.get("side") or "BUY")
@@ -247,6 +294,9 @@ def process_open_order_for_protect(
             "reason": reason,
             "position_id": pos_id,
         }
+
+    if mark is None:
+        return {"order_id": order_id, "action": "skip", "reason": "spot_unavailable"}
 
     entry = pos.get("entry_price") or order.get("entry_price")
     try:

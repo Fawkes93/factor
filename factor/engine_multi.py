@@ -20,6 +20,7 @@ from factor.rules.filter import (
     market_open_blackout,
     max_alert_age_seconds,
 )
+from factor.rules.kinds import is_asia_box, is_session_managed
 from factor.rules.presets import build_order_plan
 from factor.services.breakeven import build_breakeven_order_detail
 from factor.services.protect import protect_detail_from_metrics
@@ -31,9 +32,9 @@ def _pref_overrides(pref: Dict[str, Any], *, kind: str = "") -> Dict[str, Any]:
         "sl_points": int(pref.get("sl_points") or 1000),
         "tp_points": int(pref.get("tp_points") or 1000),
     }
-    # Only Asia breakout takes absolute SL/TP from the alert. Override
-    # replaces those prices with this pref's points. Other kinds are unchanged.
-    if kind == "asia_breakout" and bool(pref.get("sl_tp_override")):
+    # Asia box alerts take absolute SL/TP from Reaktor. Override replaces
+    # those prices with this pref's points. Dawn Cross always uses the alert.
+    if is_asia_box(kind) and bool(pref.get("sl_tp_override")):
         ov["ignore_signal_sl_tp"] = True
     return ov
 
@@ -215,16 +216,17 @@ def process_alert_for_user(
                 "breakeven": build_breakeven_order_detail(
                     plan=plan,
                     pref=pref,
-                    enabled=False if alert.kind == "asia_breakout" else None,
+                    enabled=False if is_session_managed(alert.kind) else None,
                 ),
                 **(
                     {
                         "protect": protect_detail_from_metrics(
                             alert.metrics,
                             triggered_at=alert.triggered_at,
+                            kind=alert.kind,
                         )
                     }
-                    if alert.kind == "asia_breakout"
+                    if is_session_managed(alert.kind)
                     else {}
                 ),
             },

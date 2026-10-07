@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from factor import config
 from factor.inbound.models import AlertData
+from factor.rules.kinds import is_session_managed
 
 
 def alert_triggered_at(alert: AlertData) -> Optional[datetime]:
@@ -29,8 +30,12 @@ def alert_triggered_at(alert: AlertData) -> Optional[datetime]:
 
 
 def max_alert_age_seconds(kind: str) -> float:
-    """Seconds an alert may age before it is skipped. Asia breakout is 20s."""
-    if str(kind or "").strip() == "asia_breakout":
+    """Seconds an alert may age before it is skipped.
+
+    Spike-style alerts use the tight window. Session entries
+    (Asia breakout, Asia Overnight H, Dawn Cross) use the longer one.
+    """
+    if is_session_managed(kind):
         raw = getattr(config, "MAX_ALERT_AGE_ASIA_SEC", 20)
     else:
         raw = getattr(config, "MAX_ALERT_AGE_SEC", 5)

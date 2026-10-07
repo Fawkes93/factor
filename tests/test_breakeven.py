@@ -554,3 +554,113 @@ def test_process_be_rounds_tp_on_amend(monkeypatch):
     assert r["action"] == "moved"
     assert amends[0]["sl"] == 2000.0
     assert amends[0]["tp"] == 2010.12  # rounded to 2 digits, not 2010.12345678
+
+
+def _asia_protect_order():
+    return {
+        "id": "ord-asia",
+        "kind": "asia_breakout",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "broker_position_id": "77",
+        "entry_price": 4000.0,
+        "sl_price": 3990.0,
+        "tp_price": 4020.0,
+        "created_at": "2026-10-06T05:00:00Z",
+        "detail": {
+            "breakeven": {
+                "enabled": False,
+                "applied": False,
+                "fraction": 0.5,
+                "point_size": 0.01,
+            },
+            "protect": {
+                "enabled": True,
+                "kind": "asia_breakout",
+                "flatten_hour": 23,
+                "flatten_tz": "Europe/Bucharest",
+                "max_hold_hours": 14,
+                "entry_at": "2026-10-06T05:00:00Z",
+                "trail_arm_pts": 2000,
+                "trail_pts": 200,
+                "flattened": False,
+            },
+        },
+    }
+
+
+def _asia_position():
+    return {
+        "position_id": 77,
+        "side": "BUY",
+        "entry_price": 4000.0,
+        "volume": 100,
+        "stop_loss": 3990.0,
+        "take_profit": 4020.0,
+        "broker_symbol": "XAUUSD",
+    }
+
+
+def test_flatten_runs_when_breakeven_is_off_and_spot_fails(monkeypatch):
+    """Asia forces breakeven off. Flatten at the alert hour must still close."""
+    from factor.db import repos
+    from factor.services import protect as protect_mod
+
+    updated = {}
+    monkeypatch.setattr(
+        repos,
+        "update_order",
+        lambda oid, **fields: updated.update({"id": oid, **fields}) or {"id": oid},
+    )
+    monkeypatch.setattr(
+        protect_mod,
+        "flatten_due",
+        lambda *a, **k: "flatten_hour:23:00 Europe/Bucharest",
+    )
+    closed = []
+
+    class FakeBroker:
+        _dry_run = False
+
+        def get_spot(self, sym):
+            raise RuntimeError("no quote")
+
+        def close_position(self, *, position_id, volume):
+            closed.append((position_id, volume))
+            return {"ok": True}
+
+    r = process_open_order_for_be(
+        _asia_protect_order(),
+        broker=FakeBroker(),
+        positions=[_asia_position()],
+    )
+    assert r["action"] == "flattened"
+    assert r["reason"] == "flatten_hour:23:00 Europe/Bucharest"
+    assert closed == [(77, 100)]
+    assert updated.get("status") == "closed"
+
+
+def test_protect_without_flatten_does_not_close_when_spot_fails(monkeypatch):
+    from factor.services import protect as protect_mod
+
+    monkeypatch.setattr(protect_mod, "flatten_due", lambda *a, **k: None)
+    closed = []
+
+    class FakeBroker:
+        _dry_run = False
+
+        def get_spot(self, sym):
+            raise RuntimeError("no quote")
+
+        def close_position(self, *, position_id, volume):
+            closed.append((position_id, volume))
+            return {"ok": True}
+
+    r = process_open_order_for_be(
+        _asia_protect_order(),
+        broker=FakeBroker(),
+        positions=[_asia_position()],
+    )
+    assert r["action"] == "skip"
+    assert r["reason"] == "spot_unavailable"
+    assert closed == []

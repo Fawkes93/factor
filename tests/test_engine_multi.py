@@ -459,6 +459,102 @@ def test_asia_breakout_skips_after_20s(monkeypatch):
     assert ">20s" in r["reason"]
 
 
+def test_session_kinds_accept_age_inside_20s(monkeypatch):
+    for kind, alert_id in (("asia_breakout_h", 61), ("dawn_cross", 62)):
+        r = _age_decision(monkeypatch, kind=kind, age_s=15, alert_id=alert_id)
+        assert r["action"] == "traded", kind
+
+
+def test_session_kinds_skip_after_20s(monkeypatch):
+    for kind, alert_id in (("asia_breakout_h", 63), ("dawn_cross", 64)):
+        r = _age_decision(monkeypatch, kind=kind, age_s=25, alert_id=alert_id)
+        assert r["action"] == "skip", kind
+        assert "alert_too_old" in r["reason"]
+        assert ">20s" in r["reason"]
+
+
+def test_session_alerts_store_flatten_and_disable_breakeven(monkeypatch):
+    from factor import engine_multi
+    from factor.crypto.tokens import encrypt_token
+    from factor.db import repos
+
+    enc = encrypt_token("t", config.FACTOR_TOKEN_ENC_KEY)
+    user = {
+        "id": "55555555-5555-5555-5555-555555555555",
+        "kill_switch": False,
+        "trading_enabled": True,
+    }
+    conn = {"account_id": 1, "host": "demo.ctraderapi.com", "access_token_enc": enc}
+    inserted: Dict[str, Any] = {}
+
+    def _insert(**kwargs):
+        inserted.clear()
+        inserted.update(kwargs)
+        return {"id": "sess"}
+
+    monkeypatch.setattr(repos, "claim_alert", lambda *a, **k: True)
+    monkeypatch.setattr(repos, "update_processed_reason", lambda *a, **k: None)
+    monkeypatch.setattr(repos, "insert_order", _insert)
+    monkeypatch.setattr(repos, "count_orders_today", lambda *a, **k: 0)
+    monkeypatch.setattr(repos, "count_open_orders_db", lambda *a, **k: 0)
+
+    class FakeBroker:
+        def place_market_with_sl_tp(self, plan):
+            return OrderResult(ok=True, status="open", broker_order_id="sess")
+
+    monkeypatch.setattr(
+        engine_multi, "broker_from_connection", lambda **k: FakeBroker()
+    )
+
+    cases = (
+        ("asia_breakout_h", 71, 23, "Europe/Bucharest", 3990.0),
+        ("dawn_cross", 72, 12, "Europe/Chisinau", 3980.0),
+    )
+    for kind, alert_id, hour, tz, expect_sl in cases:
+        pref = {
+            "volume_lots": 0.01,
+            "sl_points": 1000,
+            "tp_points": 1000,
+            "max_concurrent": 1,
+            "max_per_day": 5,
+            "breakeven_half_tp": True,
+            "sl_tp_override": True,
+        }
+        r = engine_multi.process_alert_for_user(
+            _alert(
+                alert_id=alert_id,
+                kind=kind,
+                price=4000.0,
+                metrics={
+                    "sl_price": 3980.0,
+                    "tp_price": 4050.0,
+                    "flatten_hour": hour,
+                    "flatten_tz": tz,
+                    "trail_arm_pts": 2000 if kind != "dawn_cross" else 0,
+                    "trail_pts": 190 if kind != "dawn_cross" else 0,
+                },
+                triggered_at=_iso_ago(2),
+            ),
+            user=user,
+            pref=pref,
+            connection=conn,
+        )
+        assert r["action"] == "traded", kind
+        assert r["plan"]["sl_price"] == expect_sl, kind
+        detail = inserted["detail"]
+        assert detail["breakeven"]["enabled"] is False
+        prot = detail["protect"]
+        assert prot["enabled"] is True
+        assert prot["kind"] == kind
+        assert prot["flatten_hour"] == hour
+        assert prot["flatten_tz"] == tz
+        if kind == "dawn_cross":
+            assert prot["max_hold_hours"] == 0.0
+            assert prot["trail_pts"] == 0.0
+        else:
+            assert prot["trail_pts"] == 190.0
+
+
 def test_spike_stays_on_5s_age_limit(monkeypatch):
     r = _age_decision(monkeypatch, kind="spike", age_s=8, alert_id=53)
     assert r["action"] == "skip"

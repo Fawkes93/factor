@@ -568,10 +568,16 @@ def process_open_order_for_be(
     if closed is not None:
         return closed
 
-    if not be_enabled_global or not meta["enabled"]:
-        return {"order_id": order_id, "action": "skip", "reason": "be_disabled"}
-    if meta["applied"]:
-        return {"order_id": order_id, "action": "skip", "reason": "already_applied"}
+    detail = order.get("detail") if isinstance(order.get("detail"), dict) else {}
+    protect_blob = detail.get("protect") if isinstance(detail.get("protect"), dict) else None
+    protect_on = bool(protect_blob and protect_blob.get("enabled"))
+
+    # Session alerts force breakeven off. Flatten and trail still have to run.
+    if not protect_on:
+        if not be_enabled_global or not meta["enabled"]:
+            return {"order_id": order_id, "action": "skip", "reason": "be_disabled"}
+        if meta["applied"]:
+            return {"order_id": order_id, "action": "skip", "reason": "already_applied"}
 
     pos_id = _extract_position_id(order, positions)
     pos = None
@@ -605,6 +611,8 @@ def process_open_order_for_be(
     try:
         entry_f = float(entry)
     except (TypeError, ValueError):
+        entry_f = None
+    if entry_f is None and not protect_on:
         return {"order_id": order_id, "action": "skip", "reason": "no_entry"}
 
     # Spot for mark
@@ -614,21 +622,21 @@ def process_open_order_for_be(
         plan = meta.get("plan") or {}
         broker_symbol = plan.get("broker_symbol") or str(order.get("symbol") or "").replace("/", "")
 
+    mark = None
+    spot_err: Optional[Exception] = None
     try:
         spot = broker.get_spot(str(broker_symbol))
         mark = mark_price_for_side(
             side=side, bid=float(spot["bid"]), ask=float(spot["ask"])
         )
     except Exception as e:
-        reason = f"spot_failed:{e}"
-        _persist_be_check(order, reason=reason)
-        return {"order_id": order_id, "action": "skip", "reason": reason}
+        spot_err = e
 
     psz = _resolve_point_size(order, meta)
 
-    # Asia breakout: trail + flatten instead of (or before) generic BE
-    protect_blob = (order.get("detail") or {}).get("protect") if isinstance(order.get("detail"), dict) else None
-    if isinstance(protect_blob, dict) and protect_blob.get("enabled"):
+    # Session alerts: flatten (and trail, when the alert sends one) instead of BE.
+    # A missing quote must not skip the flatten hour.
+    if protect_on:
         from factor.services.protect import process_open_order_for_protect
 
         return process_open_order_for_protect(
@@ -638,6 +646,11 @@ def process_open_order_for_be(
             mark=mark,
             point_size=psz,
         )
+
+    if spot_err is not None:
+        reason = f"spot_failed:{spot_err}"
+        _persist_be_check(order, reason=reason)
+        return {"order_id": order_id, "action": "skip", "reason": reason}
     order_sl = None
     try:
         order_sl = float(order["sl_price"]) if order.get("sl_price") is not None else None

@@ -22,7 +22,7 @@ Static assets: `/static/css/app.css`, `/static/js/app.js`.
 
 1. Reaktor webhook verified (HMAC)  
 2. Load candidates: enabled pref for `(kind, symbol)` **on that account**, trading on, not killed, has connection  
-3. Per account: **claim** `(user_id, account_id, alert_id)` → freshness (5s, Asia breakout 20s) → market-open blackout → daily cap (`max_per_day` per kind on that account) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
+3. Per account: **claim** `(user_id, account_id, alert_id)` → freshness (5s, session alerts 20s) → market-open blackout → daily cap (`max_per_day` per kind on that account) → Factor open orders for that pref (`max_concurrent` per kind+symbol) → place → `factor_orders` row  
 4. Background poll reconciles open `factor_orders` vs cTrader per account (marks closed when the position is gone) and may move SL to **breakeven** at half TP  
 
 One cTrader login can grant several trading accounts. Each account has its own alert prefs, orders, and kill switch. Dashboard switcher only changes which account you are looking at — fan-out still trades every account that has the pref enabled.  
@@ -32,12 +32,14 @@ No single-tenant SQLite engine and no Reaktor catch-up trading — **webhooks on
 
 ## Alert freshness
 
-Factor skips an alert when `triggered_at` is older than that kind's window (`alert_too_old`). The tight window is for fast signals. Asia breakout is a slower box trade, so it gets longer.
+Factor skips an alert when `triggered_at` is older than that kind's window (`alert_too_old`). The tight window is for fast signals. Session entries are slower box or bar-close trades, so they get longer.
 
 | Kind | Default | Override |
 |------|---------|----------|
-| `asia_breakout` | 20s | `MAX_ALERT_AGE_ASIA_SEC` |
+| `asia_breakout`, `asia_breakout_h`, `dawn_cross` | 20s | `MAX_ALERT_AGE_ASIA_SEC` |
 | `spike`, `spike_neo`, `candle`, `impulse_retrace` | 5s | `MAX_ALERT_AGE_SEC` |
+
+`asia_breakout_h` is Asia Overnight H: the same engine and webhook shape as Asia breakout, with its own preset. `dawn_cross` is the Chișinău 02:00–06:00 5m cross. Both send `metrics.sl_price`, `metrics.tp_price`, and `metrics.flatten_hour`. Asia box alerts can still override SL/TP with the pref's points. Breakeven stays off. Factor flattens at that hour in `metrics.flatten_tz` on the entry's local date, including when the check runs after midnight. `flatten_hour` 0 means no clock flatten. Asia trails when the alert sends trail distances. Dawn Cross does not.
 
 `/api/health` reports both as `max_alert_age_sec` and `max_alert_age_asia_sec`. Missing or unparseable `triggered_at` still skips (`alert_age_unknown`).
 

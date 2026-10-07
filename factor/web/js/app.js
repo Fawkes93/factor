@@ -209,7 +209,17 @@ const ALERT_KINDS = [
   { id: "spike_neo", label: "Spike Neo" },
   { id: "impulse_retrace", label: "Impulse retrace" },
   { id: "asia_breakout", label: "Asia breakout" },
+  { id: "asia_breakout_h", label: "Asia Overnight H" },
+  { id: "dawn_cross", label: "Dawn Cross" },
 ];
+
+function isAsiaBox(kind) {
+  return kind === "asia_breakout" || kind === "asia_breakout_h";
+}
+
+function isSessionManaged(kind) {
+  return isAsiaBox(kind) || kind === "dawn_cross";
+}
 
 /**
  * Symbols offered in the Alerts UI.
@@ -229,18 +239,18 @@ let prefsSaving = false;
 function newPref(kind = "candle") {
   // Spike-family defaults match typical tighter stops (editable after add)
   const spikeLike = kind === "spike" || kind === "spike_neo";
-  const asia = kind === "asia_breakout";
+  const session = isSessionManaged(kind);
   // Continuation after pullback — same risk shell as range by default
   return {
     kind,
     symbol: ALERT_SYMBOLS[0].id,
     enabled: true,
     max_concurrent: 1,
-    max_per_day: asia || spikeLike ? 1 : 5,
+    max_per_day: session || spikeLike ? 1 : 5,
     volume_lots: 0.01,
     sl_points: spikeLike ? 500 : 1000,
     tp_points: 1000,
-    breakeven_half_tp: asia ? false : true,
+    breakeven_half_tp: session ? false : true,
     breakeven_fraction: 0.5,
     sl_tp_override: false,
   };
@@ -313,9 +323,9 @@ function validatePrefs(prefs) {
       const labels = ALERT_SYMBOLS.map((s) => s.label).join(", ");
       return `Unknown symbol “${p.symbol}”. Choose ${labels}.`;
     }
-    if (p.kind === "asia_breakout" && p.sl_tp_override) {
+    if (isAsiaBox(p.kind) && p.sl_tp_override) {
       if (!(Number(p.sl_points) > 0) || !(Number(p.tp_points) > 0)) {
-        return "Asia breakout override needs SL and TP points greater than 0.";
+        return "Asia override needs SL and TP points greater than 0.";
       }
     }
     const k = `${p.kind}|${p.symbol}`;
@@ -359,7 +369,17 @@ async function persistPrefs(prefs, { quiet = false } = {}) {
   }
 }
 
-/** Asia breakout risk: Reaktor box unless the user overrides with their own points. */
+/** Dawn Cross: Reaktor sends SL/TP and the flatten hour. No point override. */
+function dawnRiskFields(p) {
+  const sl = Number(p.sl_points ?? 1000);
+  const tp = Number(p.tp_points ?? 1000);
+  return `
+          <input type="hidden" name="sl_points" value="${sl}" />
+          <input type="hidden" name="tp_points" value="${tp}" />
+          <p class="muted small pref-note">SL / TP come from Reaktor. Flatten follows the alert hour — no breakeven. Lots / caps still apply.</p>`;
+}
+
+/** Asia box risk: Reaktor box unless the user overrides with their own points. */
 function asiaRiskFields(p) {
   const override = !!p.sl_tp_override;
   const sl = Number(p.sl_points ?? 1000);
@@ -456,8 +476,10 @@ function renderPrefs() {
             )}" />
           </label>
           ${
-            p.kind === "asia_breakout"
+            isAsiaBox(p.kind)
               ? asiaRiskFields(p)
+              : p.kind === "dawn_cross"
+              ? dawnRiskFields(p)
               : `<label class="field">SL points
             <input type="number" name="sl_points" min="1" step="1" value="${Number(
               p.sl_points ?? 1000
@@ -565,7 +587,8 @@ function collectPrefsFromDom() {
     if (!prefsDraft[i]) return;
     const g = (name) => card.querySelector(`[name="${name}"]`);
     const kind = g("kind").value.trim();
-    const asia = kind === "asia_breakout";
+    const asia = isAsiaBox(kind);
+    const session = isSessionManaged(kind);
     const beEl = g("breakeven_half_tp");
     const bePctEl = g("breakeven_pct");
     const overrideEl = g("sl_tp_override");
@@ -578,7 +601,7 @@ function collectPrefsFromDom() {
       volume_lots: Number(g("volume_lots").value),
       sl_points: Number(g("sl_points").value),
       tp_points: Number(g("tp_points").value),
-      breakeven_half_tp: asia ? false : beEl ? beEl.checked : true,
+      breakeven_half_tp: session ? false : beEl ? beEl.checked : true,
       breakeven_fraction: bePctEl
         ? bePercentToFraction(bePctEl.value)
         : Number(prefsDraft[i].breakeven_fraction) || 0.5,

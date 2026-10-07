@@ -33,6 +33,9 @@ def test_asia_breakout_age_limit_is_20s(monkeypatch):
     monkeypatch.setattr(config, "MAX_ALERT_AGE_SEC", 5.0)
     monkeypatch.setattr(config, "MAX_ALERT_AGE_ASIA_SEC", 20.0)
     assert max_alert_age_seconds("asia_breakout") == 20.0
+    assert max_alert_age_seconds("asia_breakout_h") == 20.0
+    assert max_alert_age_seconds("dawn_cross") == 20.0
+    assert max_alert_age_seconds("spike") == 5.0
     for kind in ("spike", "spike_neo", "candle", "impulse_retrace"):
         assert max_alert_age_seconds(kind) == 5.0
 

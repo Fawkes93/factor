@@ -101,7 +101,8 @@ MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY") or "10")
 COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC") or "0")
 # Only place orders if alert is fresher than this (seconds since triggered_at).
 # Catch-up / history and delayed poll pulls will log and skip — no order.
-# Spike-style alerts stay on the tight window. Asia breakout is slower.
+# Spike-style alerts stay on the tight window. Session entries
+# (asia_breakout, asia_breakout_h, dawn_cross) are slower.
 MAX_ALERT_AGE_SEC = float(os.getenv("MAX_ALERT_AGE_SEC") or "5")
 MAX_ALERT_AGE_ASIA_SEC = float(os.getenv("MAX_ALERT_AGE_ASIA_SEC") or "20")
 

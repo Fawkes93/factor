@@ -235,6 +235,46 @@ def test_replace_does_not_wipe_other_account(monkeypatch):
     assert repos.list_prefs(uid, 22)[0]["kind"] == "spike"
 
 
+def test_session_kinds_force_breakeven_off(monkeypatch):
+    from factor.db import repos
+    from factor.db import client as db_client
+
+    fake = _FakeSB()
+    monkeypatch.setattr(db_client, "_client", fake)
+    monkeypatch.setattr(repos, "get_supabase", lambda: fake)
+
+    uid = "user-prefs-session"
+    saved = repos.replace_prefs_for_user(
+        uid,
+        [
+            {
+                "kind": "asia_breakout_h",
+                "symbol": "XAU/USD",
+                "enabled": True,
+                "breakeven_half_tp": True,
+                "sl_tp_override": True,
+                "sl_points": 700,
+                "tp_points": 1400,
+            },
+            {
+                "kind": "dawn_cross",
+                "symbol": "XAU/USD",
+                "enabled": True,
+                "breakeven_half_tp": True,
+                "sl_tp_override": True,
+            },
+        ],
+        account_id=1001,
+    )
+    overnight = next(r for r in saved if r["kind"] == "asia_breakout_h")
+    dawn = next(r for r in saved if r["kind"] == "dawn_cross")
+    assert overnight["breakeven_half_tp"] is False
+    assert overnight["sl_tp_override"] is True
+    assert overnight["sl_points"] == 700
+    assert dawn["breakeven_half_tp"] is False
+    assert dawn["sl_tp_override"] is False
+
+
 def test_asia_breakout_forces_breakeven_off(monkeypatch):
     from factor.db import repos
     from factor.db import client as db_client

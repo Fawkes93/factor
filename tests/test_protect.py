@@ -64,6 +64,69 @@ def test_next_trail_sl_buy_arms_and_amends():
     assert reason == "trail_amend"
 
 
+def test_flatten_hour_23_uses_entry_date_even_after_midnight():
+    """23:00 Bucharest on the entry date, including a late check after midnight.
+
+    2026-10-06 is still EEST (UTC+3). 23:00 local is 20:00 UTC.
+    00:30 the next local morning is 21:30 UTC the same UTC date.
+    """
+    entry = datetime(2026, 10, 6, 5, 0, tzinfo=timezone.utc)  # 08:00 Bucharest
+    at_23 = datetime(2026, 10, 6, 20, 0, tzinfo=timezone.utc)
+    assert flatten_due(
+        at_23,
+        entry_at=entry,
+        flatten_hour=23,
+        tz_name="Europe/Bucharest",
+        max_hold_hours=0,
+    )
+    before = datetime(2026, 10, 6, 19, 59, tzinfo=timezone.utc)
+    assert (
+        flatten_due(
+            before,
+            entry_at=entry,
+            flatten_hour=23,
+            tz_name="Europe/Bucharest",
+            max_hold_hours=0,
+        )
+        is None
+    )
+    after_midnight = datetime(2026, 10, 6, 21, 30, tzinfo=timezone.utc)
+    reason = flatten_due(
+        after_midnight,
+        entry_at=entry,
+        flatten_hour=23,
+        tz_name="Europe/Bucharest",
+        max_hold_hours=0,
+    )
+    assert reason and reason.startswith("flatten_hour:23")
+
+
+def test_flatten_hour_zero_is_off():
+    entry = datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc)
+    assert (
+        flatten_due(
+            datetime(2026, 10, 6, 20, 0, tzinfo=timezone.utc),
+            entry_at=entry,
+            flatten_hour=0,
+            tz_name="Europe/Chisinau",
+            max_hold_hours=0,
+        )
+        is None
+    )
+
+
+def test_dawn_protect_keeps_explicit_zero_flatten():
+    d = protect_detail_from_metrics(
+        {"flatten_hour": 0, "flatten_tz": "Europe/Chisinau"},
+        kind="dawn_cross",
+        triggered_at="2026-10-06T01:00:00Z",
+    )
+    assert d["kind"] == "dawn_cross"
+    assert d["flatten_hour"] == 0
+    assert d["max_hold_hours"] == 0.0
+    assert d["flatten_tz"] == "Europe/Chisinau"
+
+
 def test_flatten_hour_uses_bucharest_dst():
     # 18:00 EEST on 2026-04-01 = 15:00 UTC
     now = datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc)

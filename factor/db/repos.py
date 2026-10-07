@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from factor.db.client import get_supabase
+from factor.rules.kinds import is_asia_box, is_session_managed
 
 T_USERS = "factor_users"
 T_CONN = "factor_ctrader_connections"
@@ -489,9 +490,12 @@ def list_prefs(
     rows = []
     for r in res.data or []:
         row = dict(r)
-        if row.get("kind") == "asia_breakout":
+        if is_asia_box(str(row.get("kind") or "")):
             row["breakeven_half_tp"] = False
             row["sl_tp_override"] = bool(row.get("sl_tp_override"))
+        elif is_session_managed(str(row.get("kind") or "")):
+            row["breakeven_half_tp"] = False
+            row["sl_tp_override"] = False
         else:
             if "breakeven_half_tp" not in row:
                 row["breakeven_half_tp"] = True
@@ -562,10 +566,14 @@ def upsert_pref(
     sb = get_supabase()
     kind = str(kind).strip()
     symbol = str(symbol).strip()
-    if kind == "asia_breakout":
+    if is_asia_box(kind):
         breakeven_half_tp = False
+    elif is_session_managed(kind):
+        # Dawn Cross: Reaktor SL/TP and flatten hour. No point override.
+        breakeven_half_tp = False
+        sl_tp_override = False
     else:
-        # Override only changes Asia breakout (Reaktor box vs user points).
+        # Override only changes Asia box alerts (Reaktor box vs user points).
         sl_tp_override = False
     be_frac = _normalize_breakeven_fraction(breakeven_fraction, 0.5)
     sl_tp_override = bool(sl_tp_override)

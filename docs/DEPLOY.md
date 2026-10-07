@@ -87,7 +87,7 @@ In the **Reaktor** Render service → Environment, add/update:
 REAKTOR_API_KEYS=factor:rk_SAME_AS_FACTOR_REAKTOR_API_KEY
 
 # Push alerts to Factor (use your real Factor URL)
-REAKTOR_WEBHOOKS=[{"id":"factor","url":"https://factor-XXXX.onrender.com/hooks/reaktor","secret":"whsec_SAME_AS_FACTOR","kinds":["candle","asia_breakout"],"symbols":["XAU/USD"],"enabled":true}]
+REAKTOR_WEBHOOKS=[{"id":"factor","url":"https://factor-XXXX.onrender.com/hooks/reaktor","secret":"whsec_SAME_AS_FACTOR","kinds":["candle","asia_breakout","asia_breakout_h","dawn_cross"],"symbols":["XAU/USD"],"enabled":true}]
 ```
 
 Notes:

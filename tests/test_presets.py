@@ -178,6 +178,10 @@ def test_pref_overrides_only_ignores_signal_for_asia_when_flag_on():
     asia = _pref_overrides(pref, kind="asia_breakout")
     assert asia["ignore_signal_sl_tp"] is True
     assert asia["sl_points"] == 800
+    overnight = _pref_overrides(pref, kind="asia_breakout_h")
+    assert overnight["ignore_signal_sl_tp"] is True
+    dawn = _pref_overrides(pref, kind="dawn_cross")
+    assert "ignore_signal_sl_tp" not in dawn
     candle = _pref_overrides(pref, kind="candle")
     assert "ignore_signal_sl_tp" not in candle
     off = _pref_overrides(
