@@ -635,8 +635,20 @@ def process_open_order_for_be(
     psz = _resolve_point_size(order, meta)
 
     # Session alerts: flatten (and trail, when the alert sends one) instead of BE.
-    # A missing quote must not skip the flatten hour.
+    # CRT: partial at TP1, original stop, weekly / max-hold flatten. No trail.
+    # A missing quote must not skip a clock flatten.
     if protect_on:
+        protect_kind = str((protect_blob or {}).get("kind") or "")
+        if protect_kind == "crt":
+            from factor.services.protect_crt import process_open_order_for_crt
+
+            return process_open_order_for_crt(
+                order,
+                broker,
+                pos,
+                mark,
+                psz,
+            )
         from factor.services.protect import process_open_order_for_protect
 
         return process_open_order_for_protect(

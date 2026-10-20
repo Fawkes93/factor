@@ -95,6 +95,7 @@ Notes:
 - JSON must be **one line** in Render’s env UI (or valid JSON if multi-line is allowed).
 - `secret` must **exactly** match Factor `WEBHOOK_SECRET`.
 - Redeploy / restart **Reaktor** after changing env so webhooks load.
+- CRT (`kind=crt`) is enabled in Factor. Adding it to Reaktor `REAKTOR_WEBHOOKS` kinds is a separate reaktor change, not this service. Factor weekly flatten defaults to `FRI 23:45 Europe/Chisinau` (`CRT_WEEKLY_FLATTEN`, `CRT_WEEKLY_FLATTEN_ENABLED=true`). No new SQL.
 
 ---
 

@@ -173,6 +173,52 @@ def test_asia_override_sell_side():
     assert plan.tp_price == 3295.55
 
 
+def test_build_order_plan_uses_crt_metrics_not_preset_distances():
+    alert = AlertData(
+        alert_id=80,
+        kind="crt",
+        symbol="XAU/USD",
+        side="UP",
+        price=4000.0,
+        timeframe_min=120,
+        metrics={
+            "sl_price": 3985.0,
+            "tp_price": 4075.0,
+            "tp1_price": 4015.0,
+            "entry_price": 4000.0,
+        },
+    )
+    plan = build_order_plan(
+        alert,
+        overrides={"volume_lots": 0.02, "sl_points": 1000, "tp_points": 1000},
+    )
+    # Preset 1000 pts would be 3990 / 4010. Webhook absolutes win.
+    assert plan.sl_price == 3985.0
+    assert plan.tp_price == 4075.0
+    assert plan.volume_lots == 0.02
+    assert plan.kind == "crt"
+    assert plan.point_size == 0.01
+
+    eur = AlertData(
+        alert_id=81,
+        kind="crt",
+        symbol="EUR/USD",
+        side="DOWN",
+        price=1.10000,
+        timeframe_min=60,
+        metrics={"sl_price": 1.10200, "tp_price": 1.09400, "tp1_price": 1.09900},
+    )
+    eur_plan = build_order_plan(
+        eur, overrides={"sl_points": 150, "tp_points": 300, "volume_lots": 0.02}
+    )
+    # Preset 150/300 pts would be 1.10150 / 1.09700.
+    assert eur_plan.side == "SELL"
+    assert eur_plan.sl_price == 1.10200
+    assert eur_plan.tp_price == 1.09400
+    assert eur_plan.point_size == 0.00001
+    assert eur_plan.volume_lots == 0.02
+
+
 def test_pref_overrides_only_ignores_signal_for_asia_when_flag_on():
     pref = {"volume_lots": 0.02, "sl_points": 800, "tp_points": 1600, "sl_tp_override": True}
     asia = _pref_overrides(pref, kind="asia_breakout")
@@ -182,6 +228,8 @@ def test_pref_overrides_only_ignores_signal_for_asia_when_flag_on():
     assert overnight["ignore_signal_sl_tp"] is True
     dawn = _pref_overrides(pref, kind="dawn_cross")
     assert "ignore_signal_sl_tp" not in dawn
+    crt = _pref_overrides(pref, kind="crt")
+    assert "ignore_signal_sl_tp" not in crt
     candle = _pref_overrides(pref, kind="candle")
     assert "ignore_signal_sl_tp" not in candle
     off = _pref_overrides(

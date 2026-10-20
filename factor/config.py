@@ -143,6 +143,29 @@ BREAKEVEN_BUFFER_POINTS = float(os.getenv("BREAKEVEN_BUFFER_POINTS") or "0")
 BREAKEVEN_POLL_SEC = float(os.getenv("BREAKEVEN_POLL_SEC") or "15")
 
 # ---------------------------------------------------------------------------
+# CRT (kind=crt) — partial at TP1, original stop, weekly flatten
+# Schedule is Factor's config, not the webhook string. Copied onto the
+# order at entry. The enable switch is read on each poll.
+# Slip cap is optional points of mark vs metrics entry_price. 0 = off.
+# ---------------------------------------------------------------------------
+CRT_WEEKLY_FLATTEN = (
+    os.getenv("CRT_WEEKLY_FLATTEN") or "FRI 23:45 Europe/Chisinau"
+).strip()
+CRT_WEEKLY_FLATTEN_ENABLED = os.getenv(
+    "CRT_WEEKLY_FLATTEN_ENABLED", "true"
+).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_crt_slip = (os.getenv("CRT_MAX_ENTRY_SLIP_PTS") or "").strip()
+try:
+    CRT_MAX_ENTRY_SLIP_PTS = float(_crt_slip) if _crt_slip else 0.0
+except ValueError:
+    CRT_MAX_ENTRY_SLIP_PTS = 0.0
+
+# ---------------------------------------------------------------------------
 # Memory (Render 512MB) — logging + soft limits, not hard cgroups
 # ---------------------------------------------------------------------------
 MEMORY_WARN_MB = float(os.getenv("MEMORY_WARN_MB") or "380")
@@ -219,6 +242,9 @@ PRESETS: Dict[str, Dict[str, Any]] = {
 # PRESET_OVERRIDES = {
 #     "spike": {"XAU/USD": {"sl_points": 200, "tp_points": 400}},
 # }
+# CRT (kind=crt) has no kind override. Lot size, point size, and broker
+# symbol come from the symbol preset, same as Asia and Dawn Cross.
+# SL/TP are the webhook's absolute prices.
 PRESET_OVERRIDES: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 

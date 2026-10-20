@@ -8,6 +8,9 @@ ASIA_BOX_KINDS = frozenset({"asia_breakout", "asia_breakout_h"})
 # Session entries: SL/TP from the webhook, breakeven off, flatten from the alert.
 SESSION_KINDS = frozenset({"asia_breakout", "asia_breakout_h", "dawn_cross"})
 
+# CRT has its own protect path (partial at TP1, no trail, Friday flatten).
+CRT_KIND = "crt"
+
 
 def is_asia_box(kind: str) -> bool:
     return str(kind or "").strip() in ASIA_BOX_KINDS
@@ -15,3 +18,7 @@ def is_asia_box(kind: str) -> bool:
 
 def is_session_managed(kind: str) -> bool:
     return str(kind or "").strip() in SESSION_KINDS
+
+
+def is_crt(kind: str) -> bool:
+    return str(kind or "").strip() == CRT_KIND

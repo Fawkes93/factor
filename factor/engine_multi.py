@@ -20,10 +20,15 @@ from factor.rules.filter import (
     market_open_blackout,
     max_alert_age_seconds,
 )
-from factor.rules.kinds import is_asia_box, is_session_managed
-from factor.rules.presets import build_order_plan
+from factor.rules.kinds import is_asia_box, is_crt, is_session_managed
+from factor.rules.presets import build_order_plan, round_price
 from factor.services.breakeven import build_breakeven_order_detail
 from factor.services.protect import protect_detail_from_metrics
+from factor.services.protect_crt import (
+    crt_detail_from_metrics,
+    crt_prices_from_metrics,
+    crt_spot_block_reason,
+)
 
 
 def _pref_overrides(pref: Dict[str, Any], *, kind: str = "") -> Dict[str, Any]:
@@ -184,6 +189,23 @@ def process_alert_for_user(
     except Exception as e:
         return _skip(f"plan_error:{e}", status="error")
 
+    if is_crt(alert.kind):
+        if crt_prices_from_metrics(alert.metrics) is None:
+            return _skip("crt_missing_sl_tp")
+        # Preset distances must not replace a CRT plan. _signal_sl_tp already
+        # returns the absolute webhook prices; reject if they were dropped.
+        metric_px = crt_prices_from_metrics(alert.metrics)
+        if metric_px is not None:
+            msl, mtp = metric_px
+            psz = float(plan.point_size or 0.01)
+            if abs(plan.sl_price - round_price(msl, psz)) > psz * 0.51:
+                return _skip("crt_missing_sl_tp")
+            if abs(plan.tp_price - round_price(mtp, psz)) > psz * 0.51:
+                return _skip("crt_missing_sl_tp")
+        stale = crt_spot_block_reason(broker, plan, alert.metrics)
+        if stale:
+            return _skip(stale)
+
     result = broker.place_market_with_sl_tp(plan)
     status = result.status if result.ok else "rejected"
     if result.ok and status not in ("open", "filled", "rejected", "error"):
@@ -193,6 +215,58 @@ def process_alert_for_user(
     pos_id = None
     if isinstance(result.detail, dict):
         pos_id = result.detail.get("position_id")
+
+    # cTrader applies relative SL/TP from the fill. CRT keeps the webhook's
+    # absolute prices, so pin them once the position id is known.
+    pin_error = None
+    pinned = False
+    if (
+        is_crt(alert.kind)
+        and result.ok
+        and pos_id is not None
+        and not getattr(broker, "_dry_run", False)
+    ):
+        try:
+            broker.amend_position_sl_tp(
+                position_id=int(pos_id),
+                stop_loss=float(plan.sl_price),
+                take_profit=float(plan.tp_price),
+            )
+            pinned = True
+        except Exception as e:
+            pin_error = str(e)
+            print(f"⚠️  [{uid_short}] CRT absolute SL/TP pin failed: {e}")
+
+    managed = is_session_managed(alert.kind) or is_crt(alert.kind)
+    if is_crt(alert.kind):
+        protect = crt_detail_from_metrics(
+            alert.metrics, triggered_at=alert.triggered_at
+        )
+    elif is_session_managed(alert.kind):
+        protect = protect_detail_from_metrics(
+            alert.metrics,
+            triggered_at=alert.triggered_at,
+            kind=alert.kind,
+        )
+    else:
+        protect = None
+    order_detail: Dict[str, Any] = {
+        "broker_message": result.message,
+        "broker_detail": result.detail,
+        "ok": result.ok,
+        "breakeven": build_breakeven_order_detail(
+            plan=plan,
+            pref=pref,
+            enabled=False if managed else None,
+        ),
+    }
+    if protect is not None:
+        order_detail["protect"] = protect
+    if is_crt(alert.kind) and result.ok:
+        if pinned:
+            order_detail["crt_sltp_pinned"] = True
+        elif pin_error:
+            order_detail["crt_sltp_pin_error"] = pin_error
     try:
         order_row = repos.insert_order(
             user_id=user_id,
@@ -209,27 +283,7 @@ def process_alert_for_user(
             volume_lots=plan.volume_lots,
             broker_order_id=result.broker_order_id,
             broker_position_id=str(pos_id) if pos_id is not None else None,
-            detail={
-                "broker_message": result.message,
-                "broker_detail": result.detail,
-                "ok": result.ok,
-                "breakeven": build_breakeven_order_detail(
-                    plan=plan,
-                    pref=pref,
-                    enabled=False if is_session_managed(alert.kind) else None,
-                ),
-                **(
-                    {
-                        "protect": protect_detail_from_metrics(
-                            alert.metrics,
-                            triggered_at=alert.triggered_at,
-                            kind=alert.kind,
-                        )
-                    }
-                    if is_session_managed(alert.kind)
-                    else {}
-                ),
-            },
+            detail=order_detail,
         )
         order_id = order_row.get("id")
     except Exception as e:

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from factor.db.client import get_supabase
-from factor.rules.kinds import is_asia_box, is_session_managed
+from factor.rules.kinds import is_asia_box, is_crt, is_session_managed
 
 T_USERS = "factor_users"
 T_CONN = "factor_ctrader_connections"
@@ -490,10 +490,11 @@ def list_prefs(
     rows = []
     for r in res.data or []:
         row = dict(r)
-        if is_asia_box(str(row.get("kind") or "")):
+        kind_name = str(row.get("kind") or "")
+        if is_asia_box(kind_name):
             row["breakeven_half_tp"] = False
             row["sl_tp_override"] = bool(row.get("sl_tp_override"))
-        elif is_session_managed(str(row.get("kind") or "")):
+        elif is_session_managed(kind_name) or is_crt(kind_name):
             row["breakeven_half_tp"] = False
             row["sl_tp_override"] = False
         else:
@@ -568,8 +569,8 @@ def upsert_pref(
     symbol = str(symbol).strip()
     if is_asia_box(kind):
         breakeven_half_tp = False
-    elif is_session_managed(kind):
-        # Dawn Cross: Reaktor SL/TP and flatten hour. No point override.
+    elif is_session_managed(kind) or is_crt(kind):
+        # Dawn Cross and CRT: Reaktor SL/TP. No point override, no breakeven.
         breakeven_half_tp = False
         sl_tp_override = False
     else:

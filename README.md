@@ -43,6 +43,35 @@ There is **no** single-tenant SQLite trading path and **no** Reaktor catch-up tr
 
 ---
 
+## CRT
+
+`kind=crt` is a market order after Reaktor has already seen the limit level. Factor places `metrics.sl_price` and `metrics.tp_price` (the runner). It does not recompute those levels from the fill.
+
+The 15s poll (`BREAKEVEN_POLL_SEC`) then:
+
+- closes `tp1_frac` (default half) once, when the exit-side mark reaches `tp1_price` (bid for a buy, ask for a sell), rounded down to the volume step
+- leaves the stop at the original SL (`be_after_tp1` is false; generic breakeven is off; no trail)
+- closes whatever is left at `max_hold_until`, or at open time + `max_hold_hours` when that timestamp is missing (calendar hours, weekends included — 96h XAU, 48h EUR when Reaktor sends those)
+- closes open CRT positions on the weekly clock, whichever of the two deadlines comes first
+
+Weekly flatten is Factor config, not the webhook string:
+
+| Variable | Default |
+|----------|---------|
+| `CRT_WEEKLY_FLATTEN` | `FRI 23:45 Europe/Chisinau` |
+| `CRT_WEEKLY_FLATTEN_ENABLED` | `true` |
+| `CRT_MAX_ENTRY_SLIP_PTS` | off (`0`) |
+
+The schedule is copied onto the order at entry. The enable switch is read on every poll. With a 15s poll the Friday close goes out between 23:45:00 and 23:45:15 local. A position opened at or after that clock waits until the next Friday. A later poll still closes a position whose Friday already passed.
+
+Before the order is sent, Factor skips `crt_stale_fill` when the live mark is already through `sl_price` or `tp1_price`. Dry-run has no quote, so that check is skipped and the order is only logged. When the live fill returns a position id, Factor amends SL and TP back onto the absolute webhook prices (cTrader's market order uses a relative distance from the fill).
+
+Half a position below the broker minimum, or not a whole step, is stored as `partial_skipped:min_volume` and the partial is not retried. A 0.01 lot on gold is one minimum step, so the partial needs at least 0.02 lot. If the rounded partial would leave a stub under the minimum, the whole position is closed.
+
+CRT uses the same 5s alert-age window as candle (`MAX_ALERT_AGE_SEC`). The stale-fill check is the price gate. No SQL change: `kind` is plain text and the protect state lives in `detail` JSON.
+
+---
+
 ## Required env
 
 | Variable | Notes |

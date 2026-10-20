@@ -275,6 +275,36 @@ def test_session_kinds_force_breakeven_off(monkeypatch):
     assert dawn["sl_tp_override"] is False
 
 
+def test_crt_forces_breakeven_off(monkeypatch):
+    from factor.db import repos
+    from factor.db import client as db_client
+
+    fake = _FakeSB()
+    monkeypatch.setattr(db_client, "_client", fake)
+    monkeypatch.setattr(repos, "get_supabase", lambda: fake)
+
+    uid = "user-prefs-crt"
+    saved = repos.replace_prefs_for_user(
+        uid,
+        [
+            {
+                "kind": "crt",
+                "symbol": "XAU/USD",
+                "enabled": True,
+                "breakeven_half_tp": True,
+                "sl_tp_override": True,
+                "sl_points": 1000,
+                "tp_points": 1000,
+            }
+        ],
+        account_id=1001,
+    )
+    crt = saved[0]
+    assert crt["kind"] == "crt"
+    assert crt["breakeven_half_tp"] is False
+    assert crt["sl_tp_override"] is False
+
+
 def test_asia_breakout_forces_breakeven_off(monkeypatch):
     from factor.db import repos
     from factor.db import client as db_client

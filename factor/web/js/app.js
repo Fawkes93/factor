@@ -78,6 +78,37 @@ function pill(status) {
   return `<span class="pill ${s}">${escapeHtml(status || "—")}</span>`;
 }
 
+function orderDetail(o) {
+  let d = o && o.detail;
+  if (typeof d === "string") {
+    try {
+      d = JSON.parse(d);
+    } catch {
+      d = null;
+    }
+  }
+  return d && typeof d === "object" ? d : {};
+}
+
+/** CRT row: TP1 state and the flatten reason, when this order has them. */
+function crtManage(o) {
+  if (!o || o.kind !== "crt") return "";
+  const prot = orderDetail(o).protect || {};
+  const bits = [];
+  if (prot.partial_skipped) bits.push("TP1 skipped (min volume)");
+  else if (prot.partial_done) bits.push("TP1 done");
+  else if (String(o.status || "").toLowerCase() === "open") bits.push("TP1 open");
+  if (prot.flatten_reason) bits.push(prot.flatten_reason);
+  return bits.join(" · ");
+}
+
+function brokerCell(o) {
+  const main = (o && (o.broker_order_id || o.skip_reason)) || "—";
+  const crt = crtManage(o);
+  if (!crt) return escapeHtml(main);
+  return `${escapeHtml(main)}<div class="muted small">${escapeHtml(crt)}</div>`;
+}
+
 /** Won / Lost / Break-even tag from result column or detail.outcome */
 function orderResult(o) {
   const r = (o && (o.result || (o.detail && o.detail.outcome && o.detail.outcome.result))) || "";
@@ -183,7 +214,7 @@ function ordersTable(orders, emptyMsg) {
       <td>${pill(o.status)}</td>
       <td>${orderResult(o)}</td>
       <td class="mono">${escapeHtml(o.reaktor_alert_id)}</td>
-      <td class="mono">${escapeHtml(o.broker_order_id || o.skip_reason || "—")}</td>
+      <td class="mono">${brokerCell(o)}</td>
     </tr>`
     )
     .join("");
@@ -211,6 +242,7 @@ const ALERT_KINDS = [
   { id: "asia_breakout", label: "Asia breakout" },
   { id: "asia_breakout_h", label: "Asia Overnight H" },
   { id: "dawn_cross", label: "Dawn Cross" },
+  { id: "crt", label: "CRT" },
 ];
 
 function isAsiaBox(kind) {
@@ -219,6 +251,14 @@ function isAsiaBox(kind) {
 
 function isSessionManaged(kind) {
   return isAsiaBox(kind) || kind === "dawn_cross";
+}
+
+function isCrt(kind) {
+  return kind === "crt";
+}
+
+function isBreakevenOff(kind) {
+  return isSessionManaged(kind) || isCrt(kind);
 }
 
 /**
@@ -239,7 +279,7 @@ let prefsSaving = false;
 function newPref(kind = "candle") {
   // Spike-family defaults match typical tighter stops (editable after add)
   const spikeLike = kind === "spike" || kind === "spike_neo";
-  const session = isSessionManaged(kind);
+  const session = isBreakevenOff(kind);
   // Continuation after pullback — same risk shell as range by default
   return {
     kind,
@@ -369,6 +409,16 @@ async function persistPrefs(prefs, { quiet = false } = {}) {
   }
 }
 
+/** CRT: Reaktor SL/TP, partial at TP1, original stop. No breakeven. */
+function crtRiskFields(p) {
+  const sl = Number(p.sl_points ?? 1000);
+  const tp = Number(p.tp_points ?? 1000);
+  return `
+          <input type="hidden" name="sl_points" value="${sl}" />
+          <input type="hidden" name="tp_points" value="${tp}" />
+          <p class="muted small pref-note">SL / TP come from Reaktor. Half closes at TP1; the runner keeps the original stop and the broker TP. No breakeven. Flatten is Friday 23:45 Chișinău or max hold, whichever is first. Lots / caps still apply.</p>`;
+}
+
 /** Dawn Cross: Reaktor sends SL/TP and the flatten hour. No point override. */
 function dawnRiskFields(p) {
   const sl = Number(p.sl_points ?? 1000);
@@ -413,7 +463,7 @@ function renderPrefs() {
     root.innerHTML = `
       <div class="prefs-empty">
         <p class="muted">No alerts configured yet.</p>
-        <p class="muted small">Add Range, Spike, Spike Neo, or Impulse retrace — set lots / SL / TP / caps, then Save.</p>
+        <p class="muted small">Add Range, Spike, Spike Neo, Impulse retrace, Asia, Dawn Cross, or CRT — set lots / caps, then Save.</p>
         <button type="button" class="btn primary" id="btn-add-pref-empty">+ Add alert</button>
       </div>`;
     // Hide bottom add when empty — primary CTA is inside empty state
@@ -480,6 +530,8 @@ function renderPrefs() {
               ? asiaRiskFields(p)
               : p.kind === "dawn_cross"
               ? dawnRiskFields(p)
+              : isCrt(p.kind)
+              ? crtRiskFields(p)
               : `<label class="field">SL points
             <input type="number" name="sl_points" min="1" step="1" value="${Number(
               p.sl_points ?? 1000
@@ -588,7 +640,7 @@ function collectPrefsFromDom() {
     const g = (name) => card.querySelector(`[name="${name}"]`);
     const kind = g("kind").value.trim();
     const asia = isAsiaBox(kind);
-    const session = isSessionManaged(kind);
+    const session = isBreakevenOff(kind);
     const beEl = g("breakeven_half_tp");
     const bePctEl = g("breakeven_pct");
     const overrideEl = g("sl_tp_override");

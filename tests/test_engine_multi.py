@@ -40,6 +40,9 @@ def _mu_flags(monkeypatch):
     monkeypatch.setattr(config, "CTRADER_DRY_RUN", True)
     monkeypatch.setattr(config, "FACTOR_TOKEN_ENC_KEY", "test-enc-key-for-multi")
     monkeypatch.setattr(config, "MARKET_OPEN_BLACKOUT", False)
+    monkeypatch.setattr(config, "CRT_WEEKLY_FLATTEN", "FRI 23:45 Europe/Chisinau")
+    monkeypatch.setattr(config, "CRT_WEEKLY_FLATTEN_ENABLED", True)
+    monkeypatch.setattr(config, "CRT_MAX_ENTRY_SLIP_PTS", 0.0)
 
 
 def test_fanout_trades_and_skips_open_same_pref(monkeypatch):
@@ -560,3 +563,235 @@ def test_spike_stays_on_5s_age_limit(monkeypatch):
     assert r["action"] == "skip"
     assert "alert_too_old" in r["reason"]
     assert ">5s" in r["reason"]
+
+
+def _crt_metrics(**over):
+    base = {
+        "strategy": "crt",
+        "order_type": "market",
+        "entry_price": 4000.0,
+        "sl_price": 3985.0,
+        "tp_price": 4075.0,
+        "tp1_price": 4015.0,
+        "tp1_frac": 0.5,
+        "tp1_rr": 1.0,
+        "be_after_tp1": False,
+        "max_hold_until": "2026-10-27T16:00:00Z",
+        "max_hold_hours": 96,
+        "weekly_flatten": "MON 00:01 UTC",
+        "htf_min": 120,
+        "max_hold_htf": 48,
+        "range_high": 4012.0,
+        "range_low": 3988.0,
+        "sweep_price": 3985.0,
+        "fvg_top": 4004.0,
+        "fvg_bottom": 3996.0,
+    }
+    base.update(over)
+    return base
+
+
+def _run_crt(monkeypatch, *, metrics, bid, ask, alert_id=80, side="UP", price=4000.0, symbol="XAU/USD", position_id=55):
+    from factor import engine_multi
+    from factor.crypto.tokens import encrypt_token
+    from factor.db import repos
+
+    enc = encrypt_token("t", config.FACTOR_TOKEN_ENC_KEY)
+    user = {
+        "id": "66666666-6666-6666-6666-666666666666",
+        "kill_switch": False,
+        "trading_enabled": True,
+    }
+    pref = {
+        "volume_lots": 0.02,
+        "sl_points": 1000,
+        "tp_points": 1000,
+        "max_concurrent": 1,
+        "max_per_day": 5,
+        "breakeven_half_tp": True,
+        "sl_tp_override": True,
+    }
+    conn = {"account_id": 1, "host": "demo.ctraderapi.com", "access_token_enc": enc}
+    inserted: Dict[str, Any] = {}
+
+    def _insert(**kwargs):
+        inserted.clear()
+        inserted.update(kwargs)
+        return {"id": "crt"}
+
+    monkeypatch.setattr(repos, "claim_alert", lambda *a, **k: True)
+    monkeypatch.setattr(repos, "update_processed_reason", lambda *a, **k: None)
+    monkeypatch.setattr(repos, "insert_order", _insert)
+    monkeypatch.setattr(repos, "count_orders_today", lambda *a, **k: 0)
+    monkeypatch.setattr(repos, "count_open_orders_db", lambda *a, **k: 0)
+
+    broker = MagicMock()
+    broker._dry_run = False
+    broker.get_spot.return_value = {"bid": bid, "ask": ask}
+    broker.place_market_with_sl_tp.return_value = OrderResult(
+        ok=True,
+        status="open",
+        broker_order_id="crt1",
+        detail={"position_id": position_id} if position_id is not None else {},
+    )
+    broker.amend_position_sl_tp.return_value = {"ok": True}
+    monkeypatch.setattr(engine_multi, "broker_from_connection", lambda **k: broker)
+    result = engine_multi.process_alert_for_user(
+        _alert(
+            alert_id=alert_id,
+            kind="crt",
+            symbol=symbol,
+            side=side,
+            price=price,
+            metrics=metrics,
+            triggered_at=_iso_ago(1),
+        ),
+        user=user,
+        pref=pref,
+        connection=conn,
+    )
+    return result, inserted, broker
+
+
+def test_crt_stores_protect_and_disables_breakeven(monkeypatch):
+    result, inserted, broker = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(),
+        bid=4001.0,
+        ask=4001.2,
+    )
+    assert result["action"] == "traded"
+    # Preset 1000 pts on 4000 would be 3990 / 4010. Webhook absolutes win.
+    assert result["plan"]["sl_price"] == 3985.0
+    assert result["plan"]["tp_price"] == 4075.0
+    detail = inserted["detail"]
+    assert detail["breakeven"]["enabled"] is False
+    prot = detail["protect"]
+    assert prot["enabled"] is True
+    assert prot["kind"] == "crt"
+    assert prot["tp1_price"] == 4015.0
+    assert prot["tp1_frac"] == 0.5
+    assert prot["be_after_tp1"] is False
+    assert prot["partial_done"] is False
+    assert prot["max_hold_until"] == "2026-10-27T16:00:00Z"
+    assert prot["max_hold_hours"] == 96.0
+    assert prot["flatten_weekday"] == 4
+    assert prot["flatten_time"] == "23:45"
+    assert prot["flatten_tz"] == "Europe/Chisinau"
+    # Webhook weekly string is ignored.
+    assert "MON" not in prot["flatten_time"]
+    assert detail["crt_sltp_pinned"] is True
+    broker.amend_position_sl_tp.assert_called_once_with(
+        position_id=55, stop_loss=3985.0, take_profit=4075.0
+    )
+
+
+def test_crt_eur_plan_uses_metric_prices(monkeypatch):
+    result, inserted, _broker = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(
+            entry_price=1.10000,
+            sl_price=1.09800,
+            tp_price=1.10600,
+            tp1_price=1.10100,
+            max_hold_hours=48,
+            max_hold_until="2026-10-25T16:00:00Z",
+        ),
+        bid=1.10020,
+        ask=1.10030,
+        alert_id=82,
+        symbol="EUR/USD",
+        price=1.10000,
+    )
+    assert result["action"] == "traded"
+    assert result["plan"]["sl_price"] == 1.09800
+    assert result["plan"]["tp_price"] == 1.10600
+    assert inserted["detail"]["protect"]["max_hold_hours"] == 48.0
+    assert inserted["detail"]["protect"]["tp1_price"] == 1.10100
+
+
+def test_crt_skips_when_mark_is_beyond_sl_or_tp1(monkeypatch):
+    beyond_sl, _, broker_sl = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(),
+        bid=3980.0,
+        ask=3980.2,
+        alert_id=83,
+    )
+    assert beyond_sl["action"] == "skip"
+    assert beyond_sl["reason"] == "crt_stale_fill:beyond_sl"
+    broker_sl.place_market_with_sl_tp.assert_not_called()
+
+    beyond_tp, _, broker_tp = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(),
+        bid=4015.0,
+        ask=4015.2,
+        alert_id=84,
+    )
+    assert beyond_tp["action"] == "skip"
+    assert beyond_tp["reason"] == "crt_stale_fill:beyond_tp1"
+    broker_tp.place_market_with_sl_tp.assert_not_called()
+
+    sell_sl, _, broker_sell = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(sl_price=4010.0, tp_price=3940.0, tp1_price=3990.0),
+        bid=4011.0,
+        ask=4012.0,
+        alert_id=85,
+        side="DOWN",
+    )
+    assert sell_sl["reason"] == "crt_stale_fill:beyond_sl"
+    broker_sell.place_market_with_sl_tp.assert_not_called()
+
+    sell_tp, _, broker_sell_tp = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(sl_price=4010.0, tp_price=3940.0, tp1_price=3990.0),
+        bid=3988.0,
+        ask=3990.0,
+        alert_id=86,
+        side="DOWN",
+    )
+    assert sell_tp["reason"] == "crt_stale_fill:beyond_tp1"
+    broker_sell_tp.place_market_with_sl_tp.assert_not_called()
+
+
+def test_crt_slip_cap_is_off_by_default_and_rejects_when_set(monkeypatch):
+    # 4005 is between SL 3985 and TP1 4015. 500 points of slip, cap off.
+    ok, _, broker = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(),
+        bid=4005.0,
+        ask=4005.2,
+        alert_id=87,
+    )
+    assert ok["action"] == "traded"
+    assert ok["plan"]["sl_price"] == 3985.0
+    assert ok["plan"]["tp_price"] == 4075.0
+    broker.place_market_with_sl_tp.assert_called_once()
+
+    monkeypatch.setattr(config, "CRT_MAX_ENTRY_SLIP_PTS", 100.0)
+    blocked, _, blocked_broker = _run_crt(
+        monkeypatch,
+        metrics=_crt_metrics(),
+        bid=4005.0,
+        ask=4005.2,
+        alert_id=88,
+    )
+    assert blocked["action"] == "skip"
+    assert blocked["reason"] == "crt_stale_fill:slip"
+    blocked_broker.place_market_with_sl_tp.assert_not_called()
+
+
+def test_crt_without_metric_prices_does_not_use_preset(monkeypatch):
+    result, inserted, broker = _run_crt(
+        monkeypatch,
+        metrics={"strategy": "crt", "tp1_price": 4010.0},
+        bid=4001.0,
+        ask=4001.2,
+        alert_id=89,
+    )
+    assert result["action"] == "skip"
+    assert result["reason"] == "crt_missing_sl_tp"
+    broker.place_market_with_sl_tp.assert_not_called()
+    assert "protect" not in (inserted.get("detail") or {})

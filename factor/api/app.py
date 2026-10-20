@@ -175,6 +175,12 @@ def create_app() -> FastAPI:
             "trade_symbols": config.TRADE_SYMBOLS,
             "breakeven_enabled": bool(getattr(config, "BREAKEVEN_ENABLED", True)),
             "breakeven_fraction": float(getattr(config, "BREAKEVEN_FRACTION", 0.5) or 0.5),
+            "crt_weekly_flatten": getattr(
+                config, "CRT_WEEKLY_FLATTEN", "FRI 23:45 Europe/Chisinau"
+            ),
+            "crt_weekly_flatten_enabled": bool(
+                getattr(config, "CRT_WEEKLY_FLATTEN_ENABLED", True)
+            ),
             "breakeven": last_breakeven_status(),
             "market_open_blackout": bool(getattr(config, "MARKET_OPEN_BLACKOUT", True)),
             "market_open_time": getattr(config, "MARKET_OPEN_TIME", "01:05"),

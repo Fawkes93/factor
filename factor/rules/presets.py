@@ -142,6 +142,8 @@ def build_order_plan(
     Build SL/TP plan. Optional overrides (from user prefs): volume_lots,
     sl_points, tp_points, broker_symbol, point_size, lot_units.
     ignore_signal_sl_tp skips Reaktor absolute SL/TP (Asia breakout override).
+    CRT keeps metrics sl_price and tp_price (the runner). Preset distances
+    are only the fallback when the webhook omits them.
     """
     ov = dict(overrides or {})
     # Asia breakout override: user's points win over Reaktor absolute prices.

@@ -43,6 +43,23 @@ Factor skips an alert when `triggered_at` is older than that kind's window (`ale
 
 `/api/health` reports both as `max_alert_age_sec` and `max_alert_age_asia_sec`. Missing or unparseable `triggered_at` still skips (`alert_age_unknown`).
 
+## CRT
+
+`crt` is separate from the Asia / Dawn session path. Reaktor alerts once, with `order_type=market`, after the limit price has been reached. Factor stores a `detail.protect` blob with `kind=crt` and turns breakeven off.
+
+| Piece | Behaviour |
+|-------|-----------|
+| Entry | Market. SL = `metrics.sl_price`, TP = `metrics.tp_price` (runner). Preset point distances are not used when those prices are present. |
+| Slip | Absolute SL, TP, and `tp1_price` stay put. Skip `crt_stale_fill` if the mark is already through the stop or TP1. Optional `CRT_MAX_ENTRY_SLIP_PTS` (default off). |
+| Partial | Once, `tp1_frac` (0.5) of the volume when the bid (buy) or ask (sell) reaches `tp1_price`. Rounded down to the step. |
+| Stop | Original SL for the whole trade, including after the partial. No trail. `be_after_tp1` defaults false; if a future alert sets it true, the stop moves to the fill after TP1. |
+| Max hold | `max_hold_until`, else open time + `max_hold_hours` (96 XAU, 48 EUR). Calendar time, weekends count. |
+| Weekly | `CRT_WEEKLY_FLATTEN` default `FRI 23:45 Europe/Chisinau`, switch `CRT_WEEKLY_FLATTEN_ENABLED`. Whichever of weekly and max hold comes first. |
+
+The orders table shows TP1 done (or skipped for min volume) and the flatten reason. A fill at or after Friday 23:45 is not flattened until the next Friday. DST weeks use `Europe/Chisinau` wall time, so late March and late October still flatten at 23:45 local.
+
+The poll is the breakeven loop (`BREAKEVEN_POLL_SEC`, 15s). It routes `protect.kind=crt` to the CRT handler and leaves `asia_breakout` on the trail + flatten path.
+
 ## Kill switch
 
 | Path | Effect |
