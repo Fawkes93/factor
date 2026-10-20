@@ -274,20 +274,18 @@ class CTraderClient:
 
     @staticmethod
     def _normalize_spot_quote(raw: Any) -> Optional[float]:
-        """
-        ProtoOASpotEvent bid/ask are often uint64 in 1/100000 of price
-        (e.g. 433952000 → 4339.52). Already-decimal prices pass through.
-        """
+        """ProtoOASpotEvent bid/ask are uint64 in 1/100000 of price (always)."""
         if raw is None:
             return None
+        # bool is an int subclass; True must not become 0.00001.
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int) or (isinstance(raw, str) and raw.strip().isdigit()):
+            return int(raw) / 100_000.0
         try:
-            v = float(raw)
+            return float(raw)  # already-decimal (tests/fakes)
         except (TypeError, ValueError):
             return None
-        # Scaled protocol ints are large; absolute gold ~4k, FX ~1.
-        if v >= 1_000_000.0:
-            v = v / 100_000.0
-        return v
 
     def get_spot(self, broker_symbol: str) -> Dict[str, float]:
         """

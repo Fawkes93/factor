@@ -244,6 +244,10 @@ def crt_spot_block_reason(broker: Any, plan: Any, metrics: Optional[Dict[str, An
     entry = _metric_float(m, "entry_price")
     if entry is None:
         entry = float(plan.entry_price)
+    # A scale bug (EUR protocol 112308 vs entry 1.12308) must not look like
+    # a real beyond_tp1 / beyond_sl skip. 5% is far outside any live slip.
+    if entry > 0 and abs(mark - float(entry)) / float(entry) > 0.05:
+        return "crt_stale_fill:bad_spot"
     cap_raw = getattr(config, "CRT_MAX_ENTRY_SLIP_PTS", 0) or 0
     try:
         cap = float(cap_raw)

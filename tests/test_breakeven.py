@@ -2,6 +2,9 @@
 
 from types import SimpleNamespace
 
+import pytest
+
+from factor.broker.ctrader_client import CTraderClient
 from factor.rules.presets import price_decimals, round_price
 from factor.services.breakeven import (
     breakeven_sl_price,
@@ -479,6 +482,94 @@ def test_process_be_skips_before_half_and_records_reason(monkeypatch):
     assert r["action"] == "skip"
     assert "not_yet" in r["reason"]
     assert updated["detail"]["breakeven"]["last_reason_key"] == "not_yet"
+
+
+def _eur_be_order():
+    return {
+        "id": "ord-eur-be",
+        "kind": "candle",
+        "symbol": "EUR/USD",
+        "side": "BUY",
+        "broker_position_id": "88",
+        "entry_price": 1.12200,
+        "tp_price": 1.12500,
+        "sl_price": 1.12050,
+        "detail": {
+            "breakeven": {
+                "enabled": True,
+                "applied": False,
+                "fraction": 0.5,
+                "buffer_points": 0,
+                "tp_points": 300,
+                "sl_points": 150,
+                "point_size": 0.00001,
+            }
+        },
+    }
+
+
+def _eur_be_position():
+    return {
+        "position_id": 88,
+        "side": "BUY",
+        "entry_price": 1.12200,
+        "stop_loss": 1.12050,
+        "take_profit": 1.12500,
+        "broker_symbol": "EURUSD",
+    }
+
+
+class _ScaledSpotBroker:
+    """get_spot applies the same 1/100000 scale as CTraderClient.get_spot."""
+
+    def __init__(self, bid_raw, ask_raw):
+        self._dry_run = False
+        self.bid_raw = bid_raw
+        self.ask_raw = ask_raw
+        self.amends = []
+
+    def get_spot(self, sym):
+        assert sym == "EURUSD"
+        return {
+            "bid": CTraderClient._normalize_spot_quote(self.bid_raw),
+            "ask": CTraderClient._normalize_spot_quote(self.ask_raw),
+        }
+
+    def amend_position_sl_tp(self, *, position_id, stop_loss, take_profit):
+        self.amends.append(
+            {
+                "position_id": position_id,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            }
+        )
+        return {"ok": True}
+
+
+def test_eur_breakeven_uses_scaled_spot(monkeypatch):
+    """Protocol 112220 is 1.12220, short of half of a 300-point TP."""
+    from factor.db import repos
+
+    monkeypatch.setattr(repos, "update_order", lambda oid, **fields: {"id": oid, **fields})
+    # Half of 300 pts × 0.00001 = 0.00150. Unscaled 112220 would look miles past it.
+    early = _ScaledSpotBroker(112220, 112222)
+    r = process_open_order_for_be(
+        _eur_be_order(), broker=early, positions=[_eur_be_position()]
+    )
+    assert r["action"] == "skip"
+    assert "not_yet" in r["reason"]
+    assert r["mark"] == pytest.approx(1.12220)
+    assert early.amends == []
+
+    # 112460 → 1.12460, past the 1.12350 trigger. SL moves to the EUR entry.
+    hit = _ScaledSpotBroker(112460, 112462)
+    moved = process_open_order_for_be(
+        _eur_be_order(), broker=hit, positions=[_eur_be_position()]
+    )
+    assert moved["action"] == "moved"
+    assert moved["mark"] == pytest.approx(1.12460)
+    assert moved["be_sl"] == pytest.approx(1.12200)
+    assert hit.amends[0]["stop_loss"] == pytest.approx(1.12200)
 
 
 def test_sane_absolute_sl_drops_relative_protocol():

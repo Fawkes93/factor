@@ -1,16 +1,19 @@
 """CRT partial, original stop, max-hold, and Friday flatten. No network."""
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from factor import config
+from factor.broker.ctrader_client import CTraderClient
 from factor.services.protect_crt import (
     crt_detail_from_metrics,
     crt_flatten_due,
     crt_mark,
     crt_partial_volume,
+    crt_spot_block_reason,
     crt_stale_fill_reason,
     process_open_order_for_crt,
     tp1_reached,
@@ -420,6 +423,71 @@ def test_stale_fill_reasons_do_not_shift_levels():
             max_slip_pts=100,
         )
         == "crt_stale_fill:slip"
+    )
+
+
+class _SpotBroker:
+    def __init__(self, bid, ask):
+        self._dry_run = False
+        self.bid = bid
+        self.ask = ask
+
+    def get_spot(self, sym):
+        return {"bid": self.bid, "ask": self.ask}
+
+
+def _eur_plan(**over):
+    fields = {
+        "broker_symbol": "EURUSD",
+        "side": "BUY",
+        "entry_price": 1.12308,
+        "sl_price": 1.12258,
+        "point_size": 0.00001,
+    }
+    fields.update(over)
+    return SimpleNamespace(**fields)
+
+
+def test_eur_protocol_spot_between_sl_and_tp1_does_not_block():
+    """112310 / 112312 are ProtoOASpotEvent ints for 1.12310 / 1.12312."""
+    bid = CTraderClient._normalize_spot_quote(112310)
+    ask = CTraderClient._normalize_spot_quote(112312)
+    broker = _SpotBroker(bid, ask)
+    buy = {
+        "entry_price": 1.12308,
+        "sl_price": 1.12258,
+        "tp1_price": 1.12358,
+    }
+    assert crt_spot_block_reason(broker, _eur_plan(), buy) is None
+    # SELL mirror: stop above entry, tp1 below, mark is the ask.
+    sell = {
+        "entry_price": 1.12308,
+        "sl_price": 1.12358,
+        "tp1_price": 1.12258,
+    }
+    assert (
+        crt_spot_block_reason(
+            broker, _eur_plan(side="SELL", sl_price=1.12358), sell
+        )
+        is None
+    )
+
+
+def test_mark_ten_percent_from_entry_is_bad_spot():
+    metrics = {
+        "entry_price": 1.12308,
+        "sl_price": 1.12258,
+        "tp1_price": 1.12358,
+    }
+    far = 1.12308 * 1.10
+    assert (
+        crt_spot_block_reason(_SpotBroker(far, far), _eur_plan(), metrics)
+        == "crt_stale_fill:bad_spot"
+    )
+    # The live failure: an unscaled EUR int is past TP1 only because of scale.
+    assert (
+        crt_spot_block_reason(_SpotBroker(112310, 112312), _eur_plan(), metrics)
+        == "crt_stale_fill:bad_spot"
     )
 
 

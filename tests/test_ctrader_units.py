@@ -53,6 +53,12 @@ def test_spot_event_payload_type_is_2131():
 
 
 def test_normalize_spot_quote_scaled_and_decimal():
+    # XAU 4339.52 and EUR 1.12308 are both 1/100000 integers. The old
+    # >= 1_000_000 cutoff left EUR unscaled (112308).
+    assert CTraderClient._normalize_spot_quote(112308) == pytest.approx(1.12308)
     assert CTraderClient._normalize_spot_quote(433_952_000) == pytest.approx(4339.52)
+    assert CTraderClient._normalize_spot_quote("112308") == pytest.approx(1.12308)
+    assert CTraderClient._normalize_spot_quote(1.12308) == pytest.approx(1.12308)
     assert CTraderClient._normalize_spot_quote(4339.52) == pytest.approx(4339.52)
     assert CTraderClient._normalize_spot_quote(None) is None
+    assert CTraderClient._normalize_spot_quote(True) is None
