@@ -50,11 +50,15 @@ function show(view) {
 }
 
 function setTab(name) {
+  const current = document.querySelector(".tab.active");
+  if (current && current.dataset.tab === "prefs" && name !== "prefs" && !confirmLeavePrefs()) {
+    return;
+  }
   $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab-panel").forEach((p) => {
     p.classList.toggle("hidden", p.id !== `tab-${name}`);
   });
-  if (name === "orders") loadOrders();
+  if (name === "orders" && Date.now() - ordersLoadedAt >= ORDERS_POLL_MS) loadOrders();
 }
 
 function fmtTime(iso) {
@@ -147,11 +151,14 @@ function accountLabel(a) {
 function renderAccountSwitch() {
   const sel = $("#account-switch");
   if (!sel) return;
+  const wrap = sel.closest(".account-switch-wrap");
   const accounts = state.me?.accounts || [];
   const active = state.me?.user?.active_account_id ?? state.me?.connection?.account_id;
   if (!accounts.length) {
     sel.classList.add("hidden");
+    if (wrap) wrap.classList.add("hidden");
     sel.innerHTML = "";
+    sel.disabled = true;
     return;
   }
   sel.innerHTML = accounts
@@ -164,6 +171,9 @@ function renderAccountSwitch() {
     })
     .join("");
   sel.classList.remove("hidden");
+  if (wrap) wrap.classList.remove("hidden");
+  // One account still shows, so the active account is visible. It cannot switch.
+  sel.disabled = accounts.length < 2;
 }
 
 function renderAccount() {
@@ -176,6 +186,7 @@ function renderAccount() {
     <dt>Environment</dt><dd>${escapeHtml(env)}</dd>
     <dt>Login</dt><dd>${c ? escapeHtml(String(c.trader_login || "—")) : "—"}</dd>
     <dt>Account id</dt><dd>${c ? escapeHtml(String(c.account_id)) : "— not connected —"}</dd>
+    <dt>Currency</dt><dd>${escapeHtml(accountCurrency() || "—")}</dd>
     <dt>Host</dt><dd>${c ? escapeHtml(c.host) : "—"}</dd>
   `;
   renderAccountSwitch();
@@ -199,6 +210,38 @@ function renderStatus() {
   $("#kill-banner").classList.toggle("hidden", !killed);
 }
 
+function accountCurrency() {
+  const raw = state.me?.deposit_currency || state.me?.connection?.deposit_currency || "";
+  const code = String(raw || "").trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : "";
+}
+
+function fmtMoney(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const ccy = accountCurrency();
+  const plain = new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  if (!ccy) return plain.format(v);
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: ccy }).format(v);
+  } catch {
+    return plain.format(v);
+  }
+}
+
+function fmtPnl(o) {
+  if (!o || o.pnl == null || o.pnl === "") return `<span class="muted">—</span>`;
+  const n = Number(o.pnl);
+  if (!Number.isFinite(n)) return `<span class="muted">—</span>`;
+  const tone = n > 0.0000001 ? "pos" : n < -0.0000001 ? "neg" : "flat";
+  const live = o.pnl_live ? " live" : "";
+  const title = o.pnl_live ? ' title="unrealized"' : "";
+  return `<span class="pnl ${tone}${live}"${title}>${escapeHtml(fmtMoney(n))}</span>`;
+}
+
 function ordersTable(orders, emptyMsg) {
   if (!orders || !orders.length) {
     return `<p class="muted">${escapeHtml(emptyMsg || "No orders yet.")}</p>`;
@@ -212,7 +255,8 @@ function ordersTable(orders, emptyMsg) {
       <td class="mono">${escapeHtml(o.symbol)}</td>
       <td>${escapeHtml(o.side)}</td>
       <td>${pill(o.status)}</td>
-      <td>${orderResult(o)}</td>
+      <td>${orderResult(o)}<div class="pnl-inline">${fmtPnl(o)}</div></td>
+      <td class="pnl-col">${fmtPnl(o)}</td>
       <td class="mono">${escapeHtml(o.reaktor_alert_id)}</td>
       <td class="mono">${brokerCell(o)}</td>
     </tr>`
@@ -223,11 +267,56 @@ function ordersTable(orders, emptyMsg) {
       <thead>
         <tr>
           <th>Time</th><th>Kind</th><th>Symbol</th><th>Side</th>
-          <th>Status</th><th>Result</th><th>Alert</th><th>Broker / reason</th>
+          <th>Status</th><th>Result</th><th class="pnl-col">P/L</th><th>Alert</th><th>Broker / reason</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>`;
+}
+
+function ordersSummary(orders) {
+  const today0 = new Date();
+  today0.setHours(0, 0, 0, 0);
+  const week0 = new Date(today0);
+  const weekday = week0.getDay();
+  week0.setDate(week0.getDate() - (weekday === 0 ? 6 : weekday - 1));
+  let today = 0;
+  let week = 0;
+  let open = 0;
+  let todayAny = false;
+  let weekAny = false;
+  let openAny = false;
+  for (const o of orders || []) {
+    const n = Number(o && o.pnl);
+    if (!Number.isFinite(n)) continue;
+    const status = String((o && o.status) || "").toLowerCase();
+    if (o.pnl_live || status === "open") {
+      open += n;
+      openAny = true;
+      continue;
+    }
+    if (status !== "closed") continue;
+    const when = new Date(o.closed_at || o.created_at || 0);
+    if (Number.isNaN(when.getTime())) continue;
+    if (when >= today0) {
+      today += n;
+      todayAny = true;
+    }
+    if (when >= week0) {
+      week += n;
+      weekAny = true;
+    }
+  }
+  const cell = (label, value, any, live) => {
+    const inner = any ? fmtPnl({ pnl: value, pnl_live: !!live }) : `<span class="muted">—</span>`;
+    return `<div><span class="muted small">${label}</span>${inner}</div>`;
+  };
+  return `<div class="orders-summary" aria-label="P/L totals">${cell("Today", today, todayAny, false)}${cell(
+    "This week",
+    week,
+    weekAny,
+    false
+  )}${cell("Open", open, openAny, true)}</div>`;
 }
 
 function renderHomeOrders() {
@@ -272,9 +361,37 @@ const ALERT_SYMBOLS = [
   { id: "BTC/USD", label: "BTC" },
 ];
 
-/** Working copy of prefs in the form (field edits before Save; toggle/delete persist immediately). */
+/** Saved rows from the server. Draft edits are dirty until that card is saved. */
+let prefsBaseline = [];
+/** Working copy. `_originKey` is the saved kind|symbol; null means not stored yet. */
 let prefsDraft = [];
 let prefsSaving = false;
+let prefCid = 1;
+
+const KIND_HINTS = {
+  candle: "Range expansion.",
+  spike: "Short-window spike.",
+  spike_neo: "Reaktor spike_neo.",
+  impulse_retrace: "Pullback after a blast (impulse_retrace).",
+  asia_breakout:
+    "Bucharest box, then pullback. SL/TP from Reaktor unless Override SL / TP is on.",
+  asia_breakout_h:
+    "Asia Overnight H: Bucharest box, then pullback. SL/TP from Reaktor unless Override is on.",
+  dawn_cross: "Chișinău 02:00–06:00 5m cross. SL/TP and flatten hour come from Reaktor.",
+  crt: "Half at TP1, stop stays, flat Fri 23:45.",
+};
+
+const PREF_DIFF_FIELDS = [
+  "enabled",
+  "max_concurrent",
+  "max_per_day",
+  "volume_lots",
+  "sl_points",
+  "tp_points",
+  "sl_tp_override",
+  "breakeven_half_tp",
+  "breakeven_fraction",
+];
 
 function newPref(kind = "candle") {
   // Spike-family defaults match typical tighter stops (editable after add)
@@ -377,36 +494,180 @@ function validatePrefs(prefs) {
   return null;
 }
 
-/**
- * Persist full prefs list. Disabled rows are kept (enabled=false).
- * Delete = omit from list. Returns saved list or throws.
- */
-async function persistPrefs(prefs, { quiet = false } = {}) {
-  const err = validatePrefs(prefs);
-  if (err) {
-    if (!quiet) toast(err, "err");
-    throw new Error(err);
+function newCid() {
+  prefCid += 1;
+  return `c${prefCid}`;
+}
+
+function prefKey(p) {
+  return `${p.kind}|${p.symbol}`;
+}
+
+function splitPrefKey(key) {
+  const i = String(key).indexOf("|");
+  return [String(key).slice(0, i), String(key).slice(i + 1)];
+}
+
+function prefUrl(kind, symbol) {
+  const sym = String(symbol)
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `/api/me/prefs/${encodeURIComponent(kind)}/${sym}`;
+}
+
+function stampPref(p, originKey) {
+  return {
+    ...p,
+    _cid: p._cid || p.id || newCid(),
+    _originKey: originKey,
+  };
+}
+
+function baselineByKey() {
+  const map = new Map();
+  for (const row of prefsBaseline) map.set(prefKey(row), row);
+  return map;
+}
+
+function sameValue(field, a, b) {
+  if (field === "volume_lots" || field === "breakeven_fraction") {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) < 1e-9;
   }
-  prefsSaving = true;
-  try {
-    if (!quiet) setPrefsMsg("Saving…");
-    const data = await api("/api/me/prefs", {
-      method: "PUT",
-      body: JSON.stringify({ prefs }),
-    });
-    const saved = data.prefs || prefs;
-    if (!state.me) state.me = {};
-    state.me.prefs = saved;
-    prefsDraft = saved.map((p) => ({ ...p }));
-    if (!quiet) {
-      setPrefsMsg("Saved.", "ok");
-      toast("Preferences saved");
+  if (field === "enabled" || field === "sl_tp_override" || field === "breakeven_half_tp") {
+    return !!a === !!b;
+  }
+  if (field === "max_concurrent" || field === "max_per_day" || field === "sl_points" || field === "tp_points") {
+    return Number(a) === Number(b);
+  }
+  return a === b;
+}
+
+function diffFields(current, base) {
+  const out = {};
+  for (const field of PREF_DIFF_FIELDS) {
+    if (!sameValue(field, current[field], base ? base[field] : undefined)) {
+      out[field] = current[field];
     }
-    renderStatus();
-    return saved;
-  } finally {
-    prefsSaving = false;
   }
+  return out;
+}
+
+function cardIsDirty(p) {
+  if (!p) return false;
+  if (!p._originKey) return true;
+  if (prefKey(p) !== p._originKey) return true;
+  const base = baselineByKey().get(p._originKey);
+  if (!base) return true;
+  return Object.keys(diffFields(p, base)).length > 0;
+}
+
+function confirmLeavePrefs() {
+  if (!prefsDraft.some(cardIsDirty)) return true;
+  return confirm("You have unsaved alert changes. Leave without saving?");
+}
+
+function syncBaselineFromDraft() {
+  if (!state.me) state.me = {};
+  state.me.prefs = prefsBaseline.map((p) => ({ ...p }));
+  renderStatus();
+}
+
+function rememberSaved(i, row, previousKey) {
+  const cid = prefsDraft[i]._cid;
+  const key = prefKey(row);
+  prefsDraft[i] = stampPref(row, key);
+  prefsDraft[i]._cid = cid;
+  prefsBaseline = prefsBaseline.filter((b) => {
+    const k = prefKey(b);
+    if (previousKey && k === previousKey) return false;
+    return k !== key;
+  });
+  prefsBaseline.push({ ...row });
+  syncBaselineFromDraft();
+}
+
+function replaceBaselineRow(originKey, row) {
+  const key = prefKey(row);
+  prefsBaseline = prefsBaseline.filter((b) => prefKey(b) !== originKey && prefKey(b) !== key);
+  prefsBaseline.push({ ...row });
+  syncBaselineFromDraft();
+}
+
+function prefPayload(p) {
+  return {
+    enabled: !!p.enabled,
+    max_concurrent: Number(p.max_concurrent),
+    max_per_day: Number(p.max_per_day),
+    volume_lots: Number(p.volume_lots),
+    sl_points: Number(p.sl_points),
+    tp_points: Number(p.tp_points),
+    breakeven_half_tp: !!p.breakeven_half_tp,
+    breakeven_fraction: Number(p.breakeven_fraction),
+    sl_tp_override: !!p.sl_tp_override,
+  };
+}
+
+function validateOnePref(p, index) {
+  const err = validatePrefs([p]);
+  if (err) return err;
+  const key = prefKey(p);
+  for (let j = 0; j < prefsDraft.length; j++) {
+    if (j !== index && prefKey(prefsDraft[j]) === key) {
+      return `Duplicate alert: ${p.kind} / ${symbolLabel(p.symbol)}`;
+    }
+  }
+  return null;
+}
+
+/** Save one card. New rows POST. A renamed row is deleted and created. Otherwise PATCH the diff. */
+async function persistCard(i) {
+  const p = prefsDraft[i];
+  if (!p) return null;
+  const err = validateOnePref(p, i);
+  if (err) throw new Error(err);
+  if (!p._originKey) {
+    const data = await api(prefUrl(p.kind, p.symbol), {
+      method: "POST",
+      body: JSON.stringify(prefPayload(p)),
+    });
+    rememberSaved(i, data.pref || p, null);
+    return data.pref;
+  }
+  if (prefKey(p) !== p._originKey) {
+    const previous = p._originKey;
+    const [oldKind, oldSymbol] = splitPrefKey(previous);
+    await api(prefUrl(oldKind, oldSymbol), { method: "DELETE" });
+    try {
+      const data = await api(prefUrl(p.kind, p.symbol), {
+        method: "POST",
+        body: JSON.stringify(prefPayload(p)),
+      });
+      rememberSaved(i, data.pref || p, previous);
+      return data.pref;
+    } catch (e) {
+      p._originKey = null;
+      throw e;
+    }
+  }
+  const fields = diffFields(p, baselineByKey().get(p._originKey) || {});
+  if (!Object.keys(fields).length) return p;
+  const data = await api(prefUrl(p.kind, p.symbol), {
+    method: "PATCH",
+    body: JSON.stringify(fields),
+  });
+  rememberSaved(i, data.pref || { ...p, ...fields }, p._originKey);
+  return data.pref;
+}
+
+function refreshDirtyUi() {
+  const n = prefsDraft.filter(cardIsDirty).length;
+  const bar = $("#prefs-dirty-bar");
+  if (bar) bar.classList.toggle("hidden", n === 0);
+  const label = $("#prefs-dirty-count");
+  if (label) label.textContent = n === 1 ? "1 alert changed" : `${n} alerts changed`;
 }
 
 /** CRT: Reaktor SL/TP, partial at TP1, original stop. No breakeven. */
@@ -470,6 +731,7 @@ function renderPrefs() {
     if (addWrap) addWrap.classList.add("hidden");
     const emptyBtn = $("#btn-add-pref-empty");
     if (emptyBtn) emptyBtn.addEventListener("click", onAddPref);
+    refreshDirtyUi();
     return;
   }
 
@@ -478,8 +740,10 @@ function renderPrefs() {
   root.innerHTML = prefsDraft
     .map((p, i) => {
       const on = !!p.enabled;
+      const dirty = cardIsDirty(p);
+      const hint = KIND_HINTS[p.kind] || "";
       return `
-      <div class="pref-card ${on ? "" : "pref-disabled"}" data-i="${i}">
+      <div class="pref-card ${on ? "" : "pref-disabled"}${dirty ? " dirty" : ""}" data-i="${i}">
         <div class="pref-card-top">
           <label class="toggle" title="${
             on ? "On — click to pause (keeps your settings)" : "Off — click to enable"
@@ -491,9 +755,10 @@ function renderPrefs() {
             <span class="toggle-label">${on ? "On" : "Off"}</span>
           </label>
           <div class="pref-card-title">
-            <select name="kind" class="kind-select" aria-label="Alert type">${kindSelect(
-              p.kind
-            )}</select>
+            <select name="kind" class="kind-select" aria-label="Alert type" title="${escapeHtml(
+              hint
+            )}">${kindSelect(p.kind)}</select>
+            <span class="kind-help" title="${escapeHtml(hint)}" aria-label="About this alert type">?</span>
             <select name="symbol" class="symbol-select" aria-label="Symbol">${symbolSelect(
               p.symbol
             )}</select>
@@ -556,6 +821,12 @@ function renderPrefs() {
           </label>`
           }
         </div>
+        <div class="pref-card-actions">
+          <button type="button" class="btn small ghost btn-revert-pref">Revert</button>
+          <button type="button" class="btn small primary btn-save-pref" ${
+            prefsSaving ? "disabled" : ""
+          }>Save</button>
+        </div>
       </div>`;
     })
     .join("");
@@ -569,6 +840,23 @@ function renderPrefs() {
       const lab = card.querySelector(".toggle-label");
       if (lab) lab.textContent = on ? "On" : "Off";
     };
+
+    const markEdited = () => {
+      collectPrefsFromDom();
+      const dirty = cardIsDirty(prefsDraft[i]);
+      card.classList.toggle("dirty", dirty);
+      refreshDirtyUi();
+    };
+
+    card.addEventListener("input", (ev) => {
+      if (!ev.target || ev.target.name === "enabled") return;
+      markEdited();
+    });
+    card.addEventListener("change", (ev) => {
+      const name = ev.target && ev.target.name;
+      if (!name || name === "enabled" || name === "kind" || name === "sl_tp_override") return;
+      markEdited();
+    });
 
     card.querySelector('[name="kind"]').addEventListener("change", () => {
       collectPrefsFromDom();
@@ -585,29 +873,64 @@ function renderPrefs() {
 
     card.querySelector('[name="enabled"]').addEventListener("change", async () => {
       if (prefsSaving) return;
-      // Sync all fields first so we don't drop unsaved edits
       collectPrefsFromDom();
       const on = card.querySelector('[name="enabled"]').checked;
       prefsDraft[i].enabled = on;
       syncToggleLabel();
+      prefsSaving = true;
       try {
-        await persistPrefs(prefsDraft, { quiet: true });
+        const current = prefsDraft[i];
+        if (!current._originKey || prefKey(current) !== current._originKey) {
+          await persistCard(i);
+        } else {
+          const data = await api(prefUrl(current.kind, current.symbol), {
+            method: "PATCH",
+            body: JSON.stringify({ enabled: on }),
+          });
+          const saved = data.pref || { ...baselineByKey().get(current._originKey), enabled: on };
+          const kept = prefsDraft[i];
+          replaceBaselineRow(current._originKey, saved);
+          prefsDraft[i] = { ...kept, enabled: !!saved.enabled };
+        }
         toast(on ? "Alert enabled" : "Alert paused — settings kept");
         setPrefsMsg(on ? "Alert on." : "Alert off (settings kept in DB).", "ok");
+        prefsSaving = false;
         renderPrefs();
       } catch (e) {
-        // Revert toggle on failure
-        prefsDraft[i].enabled = !on;
+        if (prefsDraft[i]) prefsDraft[i].enabled = !on;
+        prefsSaving = false;
         renderPrefs();
         setPrefsMsg(e.message, "err");
         toast(e.message, "err");
+      } finally {
+        prefsSaving = false;
       }
+    });
+
+    card.querySelector(".btn-save-pref").addEventListener("click", () => saveCard(i));
+
+    card.querySelector(".btn-revert-pref").addEventListener("click", () => {
+      const current = prefsDraft[i];
+      if (!current) return;
+      if (!current._originKey) {
+        prefsDraft.splice(i, 1);
+      } else {
+        const base = baselineByKey().get(current._originKey);
+        prefsDraft[i] = base
+          ? stampPref(base, current._originKey)
+          : current;
+        if (base) prefsDraft[i]._cid = current._cid;
+      }
+      renderPrefs();
+      setPrefsMsg("Reverted.", "ok");
     });
 
     card.querySelector(".btn-delete-pref").addEventListener("click", async () => {
       if (prefsSaving) return;
       collectPrefsFromDom();
-      const label = `${prefsDraft[i].kind} / ${symbolLabel(prefsDraft[i].symbol)}`;
+      const current = prefsDraft[i];
+      if (!current) return;
+      const label = `${current.kind} / ${symbolLabel(current.symbol)}`;
       if (
         !confirm(
           `Delete alert “${label}” permanently?\n\nThis removes it from the database. Use the On/Off toggle if you only want to pause.`
@@ -617,20 +940,81 @@ function renderPrefs() {
       }
       const removed = prefsDraft.splice(i, 1)[0];
       renderPrefs();
+      if (!removed._originKey) {
+        toast(`Deleted ${label}`);
+        setPrefsMsg("Alert discarded.", "ok");
+        return;
+      }
+      prefsSaving = true;
       try {
-        await persistPrefs(prefsDraft, { quiet: true });
+        const [kind, symbol] = splitPrefKey(removed._originKey);
+        await api(prefUrl(kind, symbol), { method: "DELETE" });
+        prefsBaseline = prefsBaseline.filter((b) => prefKey(b) !== removed._originKey);
+        syncBaselineFromDraft();
         toast(`Deleted ${label}`);
         setPrefsMsg("Alert deleted.", "ok");
+        prefsSaving = false;
         renderPrefs();
       } catch (e) {
-        // Restore on failure
         prefsDraft.splice(i, 0, removed);
+        prefsSaving = false;
         renderPrefs();
         setPrefsMsg(e.message, "err");
         toast(e.message, "err");
+      } finally {
+        prefsSaving = false;
       }
     });
   });
+  refreshDirtyUi();
+}
+
+async function saveCard(i) {
+  if (prefsSaving) return;
+  collectPrefsFromDom();
+  prefsSaving = true;
+  try {
+    setPrefsMsg("Saving…");
+    await persistCard(i);
+    setPrefsMsg("Saved.", "ok");
+    toast("Alert saved");
+    prefsSaving = false;
+    renderPrefs();
+  } catch (e) {
+    setPrefsMsg(e.message, "err");
+    toast(e.message, "err");
+    prefsSaving = false;
+    refreshDirtyUi();
+  } finally {
+    prefsSaving = false;
+  }
+}
+
+async function saveAllDirty() {
+  if (prefsSaving) return;
+  collectPrefsFromDom();
+  const ids = prefsDraft.filter(cardIsDirty).map((p) => p._cid);
+  if (!ids.length) return;
+  prefsSaving = true;
+  try {
+    setPrefsMsg("Saving…");
+    for (const cid of ids) {
+      const i = prefsDraft.findIndex((p) => p._cid === cid);
+      if (i < 0 || !cardIsDirty(prefsDraft[i])) continue;
+      await persistCard(i);
+    }
+    setPrefsMsg("Saved.", "ok");
+    toast("Alerts saved");
+    prefsSaving = false;
+    renderPrefs();
+  } catch (e) {
+    setPrefsMsg(e.message, "err");
+    toast(e.message, "err");
+    prefsSaving = false;
+    renderPrefs();
+  } finally {
+    prefsSaving = false;
+  }
 }
 
 function collectPrefsFromDom() {
@@ -644,7 +1028,9 @@ function collectPrefsFromDom() {
     const beEl = g("breakeven_half_tp");
     const bePctEl = g("breakeven_pct");
     const overrideEl = g("sl_tp_override");
+    const prev = prefsDraft[i];
     prefsDraft[i] = {
+      ...prev,
       kind,
       symbol: g("symbol").value.trim(),
       enabled: g("enabled").checked,
@@ -656,8 +1042,10 @@ function collectPrefsFromDom() {
       breakeven_half_tp: session ? false : beEl ? beEl.checked : true,
       breakeven_fraction: bePctEl
         ? bePercentToFraction(bePctEl.value)
-        : Number(prefsDraft[i].breakeven_fraction) || 0.5,
+        : Number(prev.breakeven_fraction) || 0.5,
       sl_tp_override: asia && overrideEl ? overrideEl.checked : false,
+      _cid: prev._cid,
+      _originKey: prev._originKey,
     };
   });
   return prefsDraft.slice();
@@ -669,9 +1057,10 @@ function onAddPref() {
   const used = new Set(prefsDraft.map((p) => p.kind));
   const next = ALERT_KINDS.find((k) => !used.has(k.id));
   const kind = next ? next.id : "candle";
-  prefsDraft.push(newPref(kind));
+  const row = stampPref(newPref(kind), null);
+  prefsDraft.push(row);
   renderPrefs();
-  setPrefsMsg("New alert added — edit fields, then Save (or toggle Off to pause).");
+  setPrefsMsg("New alert added — edit the fields, then Save on the card.");
   // Scroll to the new card
   const cards = $$("#prefs-list .pref-card");
   const last = cards[cards.length - 1];
@@ -681,7 +1070,8 @@ function onAddPref() {
 async function loadMe() {
   try {
     state.me = await api("/api/me");
-    prefsDraft = (state.me.prefs || []).map((p) => ({ ...p }));
+    prefsBaseline = (state.me.prefs || []).map((p) => ({ ...p }));
+    prefsDraft = prefsBaseline.map((p) => stampPref(p, prefKey(p)));
     show("app");
     renderAccount();
     renderStatus();
@@ -709,15 +1099,58 @@ async function loadMe() {
   }
 }
 
+const ORDERS_POLL_MS = 60000;
+let ordersLoadedAt = 0;
+
+function paintOrders() {
+  const orders = state.orders || [];
+  const summary = orders.length ? ordersSummary(orders) : "";
+  $("#orders-table").innerHTML = summary + ordersTable(orders);
+  renderHomeOrders();
+}
+
+function showAccountLoading() {
+  state.orders = [];
+  prefsDraft = [];
+  prefsBaseline = [];
+  if (state.me) state.me.prefs = [];
+  const ordersEl = $("#orders-table");
+  if (ordersEl) ordersEl.textContent = "Loading…";
+  const homeEl = $("#home-orders");
+  if (homeEl) homeEl.textContent = "Loading…";
+  const prefsEl = $("#prefs-list");
+  if (prefsEl) prefsEl.textContent = "Loading…";
+  const kv = $("#account-kv");
+  if (kv) kv.innerHTML = "<dt>Account</dt><dd>Loading…</dd>";
+  refreshDirtyUi();
+}
+
 async function loadOrders() {
+  if (loadOrders._busy) return;
+  loadOrders._busy = true;
+  ordersLoadedAt = Date.now();
   try {
     const data = await api("/api/me/orders?limit=50");
     state.orders = data.orders || [];
-    $("#orders-table").innerHTML = ordersTable(state.orders);
-    renderHomeOrders();
+    if (data.deposit_currency && state.me) {
+      state.me.deposit_currency = data.deposit_currency;
+      if (state.me.connection && !state.me.connection.deposit_currency) {
+        state.me.connection.deposit_currency = data.deposit_currency;
+      }
+    }
+    paintOrders();
   } catch (e) {
     $("#orders-table").innerHTML = `<p class="hint err">${escapeHtml(e.message)}</p>`;
+  } finally {
+    loadOrders._busy = false;
   }
+}
+
+function maybeRefreshOrders() {
+  if (document.visibilityState !== "visible") return;
+  if (!state.me) return;
+  if (Date.now() - ordersLoadedAt < ORDERS_POLL_MS) return;
+  loadOrders();
 }
 
 function bind() {
@@ -726,12 +1159,15 @@ function bind() {
   );
 
   async function doLogout() {
+    if (!confirmLeavePrefs()) return;
     try {
       await api("/auth/logout", { method: "POST" });
     } catch {
       /* ignore */
     }
     state.me = null;
+    prefsDraft = [];
+    prefsBaseline = [];
     show("login");
     toast("Logged out");
   }
@@ -743,7 +1179,13 @@ function bind() {
   if (accountSwitch) {
     accountSwitch.addEventListener("change", async (e) => {
       const id = Number(e.target.value);
-      if (!Number.isFinite(id)) return;
+      const prev = state.me?.user?.active_account_id;
+      if (!Number.isFinite(id) || String(id) === String(prev)) return;
+      if (!confirmLeavePrefs()) {
+        e.target.value = prev != null ? String(prev) : "";
+        return;
+      }
+      showAccountLoading();
       try {
         await api("/api/me/account", {
           method: "POST",
@@ -760,26 +1202,14 @@ function bind() {
 
   $("#btn-add-pref").addEventListener("click", onAddPref);
 
-  $("#btn-save-prefs").addEventListener("click", async () => {
-    if (prefsSaving) return;
-    const prefs = collectPrefsFromDom();
-    try {
-      await persistPrefs(prefs);
-      renderPrefs();
-    } catch (e) {
-      setPrefsMsg(e.message, "err");
-      toast(e.message, "err");
-    }
-  });
+  const saveAll = $("#btn-save-all-prefs");
+  if (saveAll) saveAll.addEventListener("click", () => saveAllDirty());
 
   $("#btn-refresh-orders").addEventListener("click", () => loadOrders());
 
   $("#btn-kill").addEventListener("click", async () => {
-    if (
-      !confirm(
-        "Kill switch will CLOSE ALL open positions on this cTrader account and block new trades on it. Other accounts are not affected. Continue?"
-      )
-    ) {
+    const label = accountLabel(state.me?.connection) || "this account";
+    if (!confirm(`Kill trading on ${label}?`)) {
       return;
     }
     const out = $("#kill-result");
@@ -808,6 +1238,15 @@ function bind() {
     }
   });
 }
+
+window.addEventListener("beforeunload", (e) => {
+  if (!prefsDraft.some(cardIsDirty)) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
+document.addEventListener("visibilitychange", maybeRefreshOrders);
+setInterval(maybeRefreshOrders, ORDERS_POLL_MS);
 
 bind();
 loadMe();

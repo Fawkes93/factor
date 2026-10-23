@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/favicon.svg" />
   <meta name="theme-color" content="#0c0f14" />
-  <link rel="stylesheet" href="/static/css/app.css?v=11" />
+  <link rel="stylesheet" href="/static/css/app.css?v=12" />
 </head>
 <body>
   <div id="app">
@@ -17,9 +17,9 @@
         <div class="brand">
           <span class="logo">⚡</span>
           <h1>Factor</h1>
-          <p class="muted">Execution for Reaktor alerts · any cTrader broker</p>
+          <p class="muted">Execution for Reaktor alerts &middot; any cTrader broker</p>
         </div>
-        <p class="lead">Sign in by connecting your cTrader trading account (any supported broker). No password — OAuth only.</p>
+        <p class="lead">Sign in by connecting your cTrader trading account (any supported broker). No password &mdash; OAuth only.</p>
         <div class="btn-row">
           <a class="btn primary" href="/auth/ctrader/login">Connect with cTrader</a>
         </div>
@@ -59,20 +59,20 @@
               <dl class="kv" id="account-kv"></dl>
               <p class="muted small account-refresh">
                 <a href="/auth/ctrader/login">Add / refresh accounts</a>
-                — keep at least one current account checked on the cTrader grant screen.
+                &mdash; keep at least one current account checked on the cTrader grant screen.
               </p>
             </div>
             <div class="card">
               <h2>Status</h2>
               <dl class="kv" id="status-kv"></dl>
               <div id="kill-banner" class="banner danger hidden">
-                Kill switch is <strong>ON</strong> for this account — no new trades. Positions on this account were closed on kill.
+                Kill switch is <strong>ON</strong> for this account &mdash; no new trades. Positions on this account were closed on kill.
               </div>
             </div>
           </div>
           <div class="card">
             <h2>Recent orders</h2>
-            <div id="home-orders" class="table-wrap muted">Loading…</div>
+            <div id="home-orders" class="table-wrap muted">Loading&hellip;</div>
           </div>
         </div>
 
@@ -81,28 +81,17 @@
           <div class="card">
             <div class="card-head">
               <h2>Alert settings</h2>
-              <button type="button" id="btn-save-prefs" class="btn primary small">Save settings</button>
             </div>
-            <p class="muted small">
-              <strong>Range (candle)</strong> = range expansion ·
-              <strong>Spike</strong> = short-window spike ·
-              <strong>Spike Neo</strong> = Reaktor <code>spike_neo</code> ·
-              <strong>Impulse retrace</strong> = pullback after a blast (<code>impulse_retrace</code>).
-              <strong>Asia breakout</strong> and <strong>Asia Overnight H</strong> = Bucharest box then pullback (<code>asia_breakout</code>, <code>asia_breakout_h</code>) — SL/TP come from Reaktor unless <strong>Override SL / TP</strong> is on. Trail + flatten still follow the alert.
-              <strong>Dawn Cross</strong> = Chișinău 02:00–06:00 5m cross (<code>dawn_cross</code>) — SL/TP and flatten hour come from Reaktor.
-              <strong>CRT</strong> = market after the limit is reached (<code>crt</code>) — SL / runner TP come from Reaktor. Half closes at TP1, the stop stays put, and the rest flattens Friday 23:45 Chișinău or at max hold. Open CRT orders show TP1 done and the flatten reason.
-              Symbols: <strong>XAUUSD</strong>, <strong>EURUSD</strong>, <strong>BTC</strong>.
-              <strong>Breakeven</strong> moves stop to entry once price has made the set <strong>% of TP</strong> (default 50) — not used on Asia, Dawn Cross, or CRT.
-              <br />
-              <strong>Toggle</strong> pauses trading but keeps lots / SL / TP / caps.
-              <strong>Bin</strong> deletes the alert for good.
-              Use <strong>Save settings</strong> after changing fields (toggle &amp; delete save right away).
-            </p>
+            <p class="muted small">How Factor trades each Reaktor alert, per symbol.</p>
             <div id="prefs-list" class="prefs-list"></div>
             <div id="prefs-add-wrap" class="prefs-add-wrap">
               <button type="button" id="btn-add-pref" class="btn ghost">+ Add alert</button>
             </div>
             <p id="prefs-msg" class="hint"></p>
+            <div id="prefs-dirty-bar" class="prefs-dirty-bar hidden" role="status">
+              <span id="prefs-dirty-count">0 alerts changed</span>
+              <button type="button" id="btn-save-all-prefs" class="btn primary small">Save all</button>
+            </div>
           </div>
         </div>
 
@@ -113,7 +102,7 @@
               <h2>Orders</h2>
               <button type="button" id="btn-refresh-orders" class="btn small ghost">Refresh</button>
             </div>
-            <div id="orders-table" class="table-wrap">Loading…</div>
+            <div id="orders-table" class="table-wrap">Loading&hellip;</div>
           </div>
         </div>
 
@@ -123,7 +112,7 @@
             <h2>Kill switch</h2>
             <p>Closes <strong>all open positions</strong> on the <strong>selected</strong> cTrader account and blocks Factor from placing new trades on that account until you resume. Other linked accounts are not affected.</p>
             <div class="btn-row">
-              <button type="button" id="btn-kill" class="btn danger">Kill — close all &amp; stop</button>
+              <button type="button" id="btn-kill" class="btn danger">Kill &mdash; close all &amp; stop</button>
               <button type="button" id="btn-resume" class="btn primary">Resume trading</button>
             </div>
             <pre id="kill-result" class="code hidden"></pre>
@@ -141,6 +130,6 @@
 
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/static/js/app.js?v=13"></script>
+  <script src="/static/js/app.js?v=14"></script>
 </body>
 </html>

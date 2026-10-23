@@ -24,6 +24,8 @@ from factor.auth.session import clear_session_cookie, read_session_user_id, set_
 from factor.crypto.tokens import encrypt_token
 from factor.db import repos
 from factor.db.client import supabase_configured
+from factor.services import live_pnl
+from factor.services.outcome import annotate_order_pnl
 
 router = APIRouter(tags=["auth"])
 
@@ -183,7 +185,16 @@ def me(request: Request):
         print(f"⚠️  adopt_legacy_users: {e}")
     accounts = [repos.public_connection(c) for c in repos.list_connections(uid)]
     conn = _selected_connection(uid)
+    deposit_currency = None
+    if conn:
+        try:
+            deposit_currency = live_pnl.deposit_currency_for(conn)
+        except Exception as e:
+            print(f"⚠️  deposit currency: {e}")
+            deposit_currency = conn.get("deposit_currency") or None
     safe_conn = repos.public_connection(conn)
+    if safe_conn is not None and deposit_currency:
+        safe_conn["deposit_currency"] = deposit_currency
     account_id = int(conn["account_id"]) if conn and conn.get("account_id") is not None else None
     prefs = repos.list_prefs(uid, account_id) if account_id is not None else []
     # Surface the selected account's kill flags on user so existing UI keeps working
@@ -205,6 +216,7 @@ def me(request: Request):
         "accounts": accounts,
         "connection": safe_conn,
         "prefs": prefs,
+        "deposit_currency": deposit_currency,
     }
 
 
@@ -283,7 +295,22 @@ def my_orders(
     conn = _selected_connection(uid)
     account_id = int(conn["account_id"]) if conn and conn.get("account_id") is not None else None
     orders = repos.list_orders(uid, limit=limit, status=status, account_id=account_id)
-    return {"count": len(orders), "orders": orders}
+    live: dict = {}
+    if conn and any(str(o.get("status") or "").lower() == "open" for o in orders):
+        live = live_pnl.unrealized_for_connection(conn)
+    annotated = [annotate_order_pnl(o, live) for o in orders]
+    deposit_currency = None
+    if conn:
+        try:
+            deposit_currency = live_pnl.deposit_currency_for(conn)
+        except Exception as e:
+            print(f"⚠️  deposit currency: {e}")
+            deposit_currency = conn.get("deposit_currency") or None
+    return {
+        "count": len(annotated),
+        "orders": annotated,
+        "deposit_currency": deposit_currency,
+    }
 
 
 @router.put("/api/me/prefs")
@@ -316,3 +343,120 @@ async def put_prefs(request: Request):
     except Exception as e:
         raise HTTPException(500, f"save prefs failed: {e}") from e
     return {"count": len(saved), "prefs": saved}
+
+
+def _selected_account(request: Request) -> tuple:
+    """Logged-in user and the dashboard's cTrader account id."""
+    uid = _require_user_id(request)
+    conn = _selected_connection(uid)
+    if not conn or conn.get("account_id") is None:
+        raise HTTPException(400, "no cTrader account")
+    return uid, int(conn["account_id"])
+
+
+def _pref_json(request_body: object) -> dict:
+    if request_body is None:
+        return {}
+    if not isinstance(request_body, dict):
+        raise HTTPException(400, "body must be an object")
+    return request_body
+
+
+async def _read_json(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, f"invalid JSON: {e}") from e
+    return _pref_json(body)
+
+
+def _body_int(body: dict, key: str, default: int) -> int:
+    if key not in body or body.get(key) is None or body.get(key) == "":
+        return default
+    return int(body[key])
+
+
+def _body_float(body: dict, key: str, default: float) -> float:
+    if key not in body or body.get(key) is None or body.get(key) == "":
+        return default
+    return float(body[key])
+
+
+_PREF_PATCH_KEYS = (
+    "enabled",
+    "max_concurrent",
+    "max_per_day",
+    "volume_lots",
+    "sl_points",
+    "tp_points",
+    "sl_tp_override",
+    "breakeven_half_tp",
+    "breakeven_fraction",
+)
+
+
+@router.patch("/api/me/prefs/{kind}/{symbol:path}")
+async def patch_pref(kind: str, symbol: str, request: Request):
+    """Update one alert. Body contains only the changed fields."""
+    uid, account_id = _selected_account(request)
+    body = await _read_json(request)
+    fields = {key: body[key] for key in _PREF_PATCH_KEYS if key in body}
+    if not fields:
+        raise HTTPException(400, "no preference fields")
+    try:
+        row = repos.update_pref(uid, account_id, kind, symbol, fields)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except repos.PrefSchemaError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"save pref failed: {e}") from e
+    return {"pref": row}
+
+
+@router.post("/api/me/prefs/{kind}/{symbol:path}")
+async def create_pref(kind: str, symbol: str, request: Request):
+    """Create one alert. 409 when that kind and symbol already exist."""
+    uid, account_id = _selected_account(request)
+    ctype = (request.headers.get("content-type") or "").lower()
+    body = await _read_json(request) if "application/json" in ctype else {}
+    kind = str(kind or "").strip()
+    symbol = str(symbol or "").strip()
+    if not kind or not symbol:
+        raise HTTPException(400, "kind and symbol required")
+    if repos.get_pref(uid, account_id, kind, symbol):
+        raise HTTPException(409, "alert already exists")
+    try:
+        row = repos.upsert_pref(
+            user_id=uid,
+            account_id=account_id,
+            kind=kind,
+            symbol=symbol,
+            enabled=bool(body.get("enabled", True)),
+            max_concurrent=_body_int(body, "max_concurrent", 1),
+            max_per_day=_body_int(body, "max_per_day", 5),
+            volume_lots=_body_float(body, "volume_lots", 0.01),
+            sl_points=_body_int(body, "sl_points", 1000),
+            tp_points=_body_int(body, "tp_points", 1000),
+            breakeven_half_tp=bool(body.get("breakeven_half_tp", True)),
+            breakeven_fraction=float(body.get("breakeven_fraction", 0.5) or 0.5),
+            sl_tp_override=bool(body.get("sl_tp_override", False)),
+        )
+    except repos.PrefSchemaError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"save pref failed: {e}") from e
+    return {"pref": row}
+
+
+@router.delete("/api/me/prefs/{kind}/{symbol:path}")
+def delete_pref(kind: str, symbol: str, request: Request):
+    """Delete one alert."""
+    uid, account_id = _selected_account(request)
+    if not repos.delete_pref(uid, account_id, kind, symbol):
+        raise HTTPException(404, "alert not found")
+    return {"ok": True}

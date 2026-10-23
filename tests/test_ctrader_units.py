@@ -50,6 +50,74 @@ def test_spot_event_payload_type_is_2131():
     assert cc.PT_UNSUBSCRIBE_SPOTS_RES == 2130
     assert cc.PT_SPOT_EVENT == 2131
     assert cc.PT_ORDER_ERROR_EVENT == 2132
+    assert cc.PT_ASSET_LIST_REQ == 2112
+    assert cc.PT_ASSET_LIST_RES == 2113
+    assert cc.PT_TRADER_REQ == 2121
+    assert cc.PT_TRADER_RES == 2122
+    assert cc.PT_GET_POSITION_UNREALIZED_PNL_REQ == 2187
+    assert cc.PT_GET_POSITION_UNREALIZED_PNL_RES == 2188
+
+
+def test_get_unrealized_pnl_scales_money_digits():
+    client = CTraderClient(
+        host="demo.ctraderapi.com",
+        client_id="id",
+        client_secret="secret",
+        access_token="token",
+        account_id=42,
+    )
+    seen = {}
+
+    def fake_request(payload_type, payload, expect=None, expect_any=None):
+        seen["type"] = payload_type
+        seen["payload"] = payload
+        return {
+            "payloadType": 2188,
+            "payload": {
+                "moneyDigits": 2,
+                "positionUnrealizedPnL": [
+                    {
+                        "positionId": 55,
+                        "grossUnrealizedPnL": 150,
+                        "netUnrealizedPnL": -25,
+                    }
+                ],
+            },
+        }
+
+    client._request = fake_request
+    rows = client.get_unrealized_pnl()
+    assert seen["type"] == 2187
+    assert seen["payload"] == {"ctidTraderAccountId": 42}
+    assert rows == [{"position_id": 55, "gross": 1.5, "net": -0.25}]
+
+
+def test_get_deposit_currency_maps_asset_name():
+    client = CTraderClient(
+        host="demo.ctraderapi.com",
+        client_id="id",
+        client_secret="secret",
+        access_token="token",
+        account_id=7,
+    )
+
+    def fake_request(payload_type, payload, expect=None, expect_any=None):
+        if payload_type == cc.PT_TRADER_REQ:
+            return {"payloadType": 2122, "payload": {"trader": {"depositAssetId": 7}}}
+        if payload_type == cc.PT_ASSET_LIST_REQ:
+            return {
+                "payloadType": 2113,
+                "payload": {
+                    "asset": [
+                        {"assetId": 1, "name": "EUR"},
+                        {"assetId": 7, "name": "USD"},
+                    ]
+                },
+            }
+        raise AssertionError(payload_type)
+
+    client._request = fake_request
+    assert client.get_deposit_currency() == "USD"
 
 
 def test_normalize_spot_quote_scaled_and_decimal():

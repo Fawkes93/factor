@@ -348,6 +348,7 @@ def public_connection(conn: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "trading_enabled": conn.get("trading_enabled", True),
         "access_expires_at": conn.get("access_expires_at"),
         "updated_at": conn.get("updated_at"),
+        "deposit_currency": conn.get("deposit_currency") or None,
         "label": account_label(conn),
     }
 
@@ -479,6 +480,25 @@ def prune_ungranted_connections(user_id: str, keep_account_ids: List[int]) -> in
 # ---------------------------------------------------------------------------
 
 
+def _normalize_pref_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply kind rules the dashboard and engine both rely on."""
+    row = dict(row)
+    kind_name = str(row.get("kind") or "")
+    if is_asia_box(kind_name):
+        row["breakeven_half_tp"] = False
+        row["sl_tp_override"] = bool(row.get("sl_tp_override"))
+    elif is_session_managed(kind_name) or is_crt(kind_name):
+        row["breakeven_half_tp"] = False
+        row["sl_tp_override"] = False
+    else:
+        if "breakeven_half_tp" not in row:
+            row["breakeven_half_tp"] = True
+        row["sl_tp_override"] = False
+    if row.get("breakeven_fraction") is None:
+        row["breakeven_fraction"] = 0.5
+    return row
+
+
 def list_prefs(
     user_id: str, account_id: Optional[int] = None
 ) -> List[Dict[str, Any]]:
@@ -487,24 +507,159 @@ def list_prefs(
     if account_id is not None:
         q = q.eq("account_id", int(account_id))
     res = q.execute()
-    rows = []
-    for r in res.data or []:
-        row = dict(r)
-        kind_name = str(row.get("kind") or "")
-        if is_asia_box(kind_name):
-            row["breakeven_half_tp"] = False
-            row["sl_tp_override"] = bool(row.get("sl_tp_override"))
-        elif is_session_managed(kind_name) or is_crt(kind_name):
-            row["breakeven_half_tp"] = False
-            row["sl_tp_override"] = False
-        else:
-            if "breakeven_half_tp" not in row:
-                row["breakeven_half_tp"] = True
-            row["sl_tp_override"] = False
-        if row.get("breakeven_fraction") is None:
-            row["breakeven_fraction"] = 0.5
-        rows.append(row)
-    return rows
+    return [_normalize_pref_row(r) for r in (res.data or [])]
+
+
+def get_pref(
+    user_id: str, account_id: int, kind: str, symbol: str
+) -> Optional[Dict[str, Any]]:
+    sb = get_supabase()
+    res = (
+        sb.table(T_PREFS)
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("account_id", int(account_id))
+        .eq("kind", str(kind).strip())
+        .eq("symbol", str(symbol).strip())
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    return _normalize_pref_row(res.data[0])
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+# Columns a single-alert PATCH may change. kind/symbol identify the row.
+_PREF_FIELD_CAST = {
+    "enabled": _as_bool,
+    "max_concurrent": lambda v: int(v),
+    "max_per_day": lambda v: int(v),
+    "volume_lots": lambda v: float(v),
+    "sl_points": lambda v: int(v),
+    "tp_points": lambda v: int(v),
+    "sl_tp_override": _as_bool,
+    "breakeven_half_tp": _as_bool,
+    "breakeven_fraction": lambda v: _normalize_breakeven_fraction(v),
+}
+
+
+def update_pref(
+    user_id: str,
+    account_id: int,
+    kind: str,
+    symbol: str,
+    fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    UPDATE one alert row. `fields` is a whitelist of changed columns.
+    Raises LookupError when the row does not exist.
+    """
+    kind = str(kind or "").strip()
+    symbol = str(symbol or "").strip()
+    if not kind or not symbol:
+        raise ValueError("kind and symbol required")
+    if not isinstance(fields, dict):
+        raise ValueError("no preference fields")
+    clean: Dict[str, Any] = {}
+    for key, cast in _PREF_FIELD_CAST.items():
+        if key not in fields:
+            continue
+        try:
+            clean[key] = cast(fields[key])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"invalid {key}") from e
+    if not clean:
+        raise ValueError("no preference fields")
+    if "volume_lots" in clean and not (clean["volume_lots"] > 0):
+        raise ValueError("volume_lots must be > 0")
+    if "sl_points" in clean and clean["sl_points"] <= 0:
+        raise ValueError("sl_points must be > 0")
+    if "tp_points" in clean and clean["tp_points"] <= 0:
+        raise ValueError("tp_points must be > 0")
+    if "max_concurrent" in clean and clean["max_concurrent"] < 0:
+        raise ValueError("max_concurrent must be >= 0")
+    if "max_per_day" in clean and clean["max_per_day"] < 0:
+        raise ValueError("max_per_day must be >= 0")
+    if is_asia_box(kind):
+        if "breakeven_half_tp" in clean:
+            clean["breakeven_half_tp"] = False
+    elif is_session_managed(kind) or is_crt(kind):
+        if "breakeven_half_tp" in clean:
+            clean["breakeven_half_tp"] = False
+        if "sl_tp_override" in clean:
+            clean["sl_tp_override"] = False
+    else:
+        if "sl_tp_override" in clean:
+            clean["sl_tp_override"] = False
+
+    existing = get_pref(user_id, int(account_id), kind, symbol)
+    if not existing:
+        raise LookupError("alert not found")
+
+    sb = get_supabase()
+    payload = dict(clean)
+    optional = [
+        col
+        for col in ("sl_tp_override", "breakeven_fraction", "breakeven_half_tp")
+        if col in payload
+    ]
+    dropped: List[str] = []
+    last_err: Optional[Exception] = None
+    while True:
+        try:
+            res = (
+                sb.table(T_PREFS).update(payload).eq("id", existing["id"]).execute()
+            )
+            if not res.data:
+                raise RuntimeError("update pref failed")
+            if dropped:
+                raise PrefSchemaError(
+                    "That setting is not stored yet. Run the latest sql migrations in Supabase, then save again."
+                )
+            return _normalize_pref_row(res.data[0])
+        except PrefSchemaError:
+            raise
+        except Exception as e:
+            last_err = e
+            if not optional:
+                break
+            col = optional.pop(0)
+            payload.pop(col, None)
+            dropped.append(col)
+    raise RuntimeError(f"update pref failed: {last_err}")
+
+
+def delete_pref(
+    user_id: str, account_id: int, kind: str, symbol: str
+) -> bool:
+    """Delete one alert. Returns False when it was not stored."""
+    existing = get_pref(user_id, int(account_id), kind, symbol)
+    if not existing:
+        return False
+    sb = get_supabase()
+    sb.table(T_PREFS).delete().eq("id", existing["id"]).execute()
+    return True
+
+
+def set_deposit_currency(user_id: str, account_id: int, currency: str) -> None:
+    """Cache the account deposit currency on the connection row."""
+    code = str(currency or "").strip().upper()
+    if not code or not user_id:
+        return
+    sb = get_supabase()
+    (
+        sb.table(T_CONN)
+        .update({"deposit_currency": code[:16]})
+        .eq("user_id", user_id)
+        .eq("account_id", int(account_id))
+        .execute()
+    )
 
 
 class PrefSchemaError(RuntimeError):

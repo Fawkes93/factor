@@ -24,8 +24,12 @@ PT_ACCOUNT_AUTH_RES = 2103
 PT_NEW_ORDER_REQ = 2106
 PT_AMEND_POSITION_SLTP_REQ = 2110
 PT_CLOSE_POSITION_REQ = 2111
+PT_ASSET_LIST_REQ = 2112
+PT_ASSET_LIST_RES = 2113
 PT_SYMBOLS_LIST_REQ = 2114
 PT_SYMBOLS_LIST_RES = 2115
+PT_TRADER_REQ = 2121
+PT_TRADER_RES = 2122
 PT_RECONCILE_REQ = 2124
 PT_RECONCILE_RES = 2125
 PT_EXECUTION_EVENT = 2126
@@ -377,6 +381,113 @@ class CTraderClient:
         if not isinstance(deals, list):
             return []
         return [d for d in deals if isinstance(d, dict)]
+
+    def get_unrealized_pnl(self) -> List[Dict[str, Any]]:
+        """
+        ProtoOAGetPositionUnrealizedPnLReq (2187).
+
+        Returns [{position_id, gross, net}] in deposit-currency floats.
+        """
+        from factor.services.outcome import money_to_float
+
+        msg = self._request(
+            PT_GET_POSITION_UNREALIZED_PNL_REQ,
+            {"ctidTraderAccountId": self.account_id},
+            expect=PT_GET_POSITION_UNREALIZED_PNL_RES,
+        )
+        if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(f"unrealized pnl failed: {msg.get('payload') or msg}")
+        body = msg.get("payload") or {}
+        digits = body.get("moneyDigits")
+        if digits is None:
+            digits = body.get("money_digits")
+        rows = (
+            body.get("positionUnrealizedPnL")
+            or body.get("positionUnrealizedPNL")
+            or []
+        )
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            pid = row.get("positionId")
+            if pid is None:
+                pid = row.get("position_id")
+            try:
+                pid_i = int(pid)
+            except (TypeError, ValueError):
+                continue
+            row_digits = row.get("moneyDigits")
+            if row_digits is None:
+                row_digits = digits
+            gross_raw = row.get("grossUnrealizedPnL")
+            if gross_raw is None:
+                gross_raw = row.get("gross_unrealized_pnl")
+            net_raw = row.get("netUnrealizedPnL")
+            if net_raw is None:
+                net_raw = row.get("net_unrealized_pnl")
+            out.append(
+                {
+                    "position_id": pid_i,
+                    "gross": money_to_float(gross_raw, row_digits),
+                    "net": money_to_float(net_raw, row_digits),
+                }
+            )
+        return out
+
+    def get_deposit_currency(self) -> Optional[str]:
+        """
+        Deposit currency code (e.g. USD).
+
+        ProtoOATraderReq.depositAssetId, then the name from ProtoOAAssetListReq.
+        """
+        trader_msg = self._request(
+            PT_TRADER_REQ,
+            {"ctidTraderAccountId": self.account_id},
+            expect=PT_TRADER_RES,
+        )
+        if int(trader_msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(f"trader req failed: {trader_msg.get('payload') or trader_msg}")
+        body = trader_msg.get("payload") or {}
+        trader = body.get("trader") if isinstance(body.get("trader"), dict) else body
+        asset_id = trader.get("depositAssetId")
+        if asset_id is None:
+            asset_id = trader.get("deposit_asset_id")
+        if asset_id is None:
+            return None
+        assets_msg = self._request(
+            PT_ASSET_LIST_REQ,
+            {"ctidTraderAccountId": self.account_id},
+            expect=PT_ASSET_LIST_RES,
+        )
+        if int(assets_msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(
+                f"asset list failed: {assets_msg.get('payload') or assets_msg}"
+            )
+        abody = assets_msg.get("payload") or {}
+        assets = abody.get("asset") or abody.get("assets") or []
+        if isinstance(assets, dict):
+            assets = [assets]
+        if not isinstance(assets, list):
+            return None
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            aid = asset.get("assetId")
+            if aid is None:
+                aid = asset.get("asset_id")
+            try:
+                if int(aid) != int(asset_id):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            name = str(asset.get("name") or asset.get("displayName") or "").strip().upper()
+            return name or None
+        return None
 
     def list_open_positions_info(self) -> List[Dict[str, Any]]:
         """Normalized open positions for BE / management."""

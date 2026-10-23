@@ -4,6 +4,7 @@ Tag closed Factor orders as won / lost / breakeven from cTrader deal PnL.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 # Labels stored on factor_orders.result and detail.outcome
@@ -103,6 +104,67 @@ def summarize_close_deals(deals: List[Dict[str, Any]]) -> Dict[str, Any]:
         "close_price": close_price,
         "close_deals": close_deals,
     }
+
+
+def _detail_dict(order: Dict[str, Any]) -> Dict[str, Any]:
+    detail = order.get("detail")
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            detail = None
+    return detail if isinstance(detail, dict) else {}
+
+
+def _as_float(raw: Any) -> Optional[float]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def annotate_order_pnl(
+    order: Dict[str, Any],
+    live: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Copy an order and attach pnl / pnl_gross / pnl_live for the dashboard.
+
+    Closed rows use detail.outcome. Open rows use live unrealized P/L keyed
+    by broker position id. A closed row with no outcome stays blank.
+    """
+    o = dict(order)
+    outcome = _detail_dict(o).get("outcome") or {}
+    if not isinstance(outcome, dict):
+        outcome = {}
+    status = str(o.get("status") or "").lower()
+    live_map = live or {}
+    if status == "open":
+        pid = o.get("broker_position_id")
+        hit = live_map.get(str(pid)) if pid is not None and str(pid) != "" else None
+        if isinstance(hit, dict) and hit.get("net") is not None:
+            o["pnl"] = _as_float(hit.get("net"))
+            o["pnl_gross"] = _as_float(hit.get("gross"))
+            o["pnl_live"] = True
+        else:
+            o["pnl"] = None
+            o["pnl_live"] = False
+        return o
+    net = _as_float(outcome.get("net_pnl")) if "net_pnl" in outcome else None
+    if outcome.get("net_pnl") is not None and net is not None:
+        o["pnl"] = net
+        o["pnl_gross"] = _as_float(outcome.get("gross_profit"))
+        if outcome.get("swap") is not None:
+            o["pnl_swap"] = _as_float(outcome.get("swap"))
+        if outcome.get("commission") is not None:
+            o["pnl_commission"] = _as_float(outcome.get("commission"))
+        o["pnl_live"] = False
+        return o
+    o["pnl"] = None
+    o["pnl_live"] = False
+    return o
 
 
 def result_label(result: Optional[str]) -> str:

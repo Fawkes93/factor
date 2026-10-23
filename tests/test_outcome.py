@@ -5,6 +5,7 @@ from factor.services.outcome import (
     RESULT_LOST,
     RESULT_UNKNOWN,
     RESULT_WON,
+    annotate_order_pnl,
     classify_net_pnl,
     money_to_float,
     summarize_close_deals,
@@ -64,6 +65,46 @@ def test_summarize_no_close_detail():
     out = summarize_close_deals([{"executionPrice": 1.0}])
     assert out["result"] == RESULT_UNKNOWN
     assert out["close_deals"] == 0
+
+
+def test_annotate_closed_open_and_blank():
+    closed = annotate_order_pnl(
+        {
+            "status": "closed",
+            "detail": {
+                "outcome": {
+                    "net_pnl": 14.4,
+                    "gross_profit": 15.0,
+                    "swap": -0.1,
+                    "commission": -0.5,
+                }
+            },
+        }
+    )
+    assert closed["pnl"] == 14.4
+    assert closed["pnl_gross"] == 15.0
+    assert closed["pnl_swap"] == -0.1
+    assert closed["pnl_commission"] == -0.5
+    assert closed["pnl_live"] is False
+
+    blank = annotate_order_pnl({"status": "closed", "detail": {}})
+    assert blank["pnl"] is None
+    assert blank["pnl_live"] is False
+
+    live = annotate_order_pnl(
+        {"status": "open", "broker_position_id": 55, "detail": {}},
+        {"55": {"net": -0.25, "gross": -0.2}},
+    )
+    assert live["pnl"] == -0.25
+    assert live["pnl_gross"] == -0.2
+    assert live["pnl_live"] is True
+
+    missing = annotate_order_pnl(
+        {"status": "open", "broker_position_id": "9", "detail": {}},
+        {},
+    )
+    assert missing["pnl"] is None
+    assert missing["pnl_live"] is False
 
 
 def test_mark_closed_sets_result(monkeypatch):
