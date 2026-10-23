@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/favicon.svg" />
   <meta name="theme-color" content="#0c0f14" />
-  <link rel="stylesheet" href="/static/css/app.css?v=12" />
+  <link rel="stylesheet" href="/static/css/app.css?v=13" />
 </head>
 <body>
   <div id="app">
@@ -29,26 +29,21 @@
 
     <!-- Main shell -->
     <section id="view-app" class="view hidden">
-      <header class="topbar">
-        <div class="brand-inline">
-          <span class="logo">⚡</span>
-          <strong>Factor</strong>
-        </div>
+      <div class="chrome">
+        <header class="topbar">
+          <div class="brand-inline">
+            <span class="logo">⚡</span>
+            <strong>Factor</strong>
+          </div>
+        </header>
         <nav class="tabs">
           <button type="button" data-tab="home" class="tab active">Home</button>
           <button type="button" data-tab="prefs" class="tab">Alerts</button>
           <button type="button" data-tab="orders" class="tab">Orders</button>
-          <button type="button" data-tab="danger" class="tab">Danger</button>
+          <button type="button" data-tab="account" class="tab">Account</button>
         </nav>
-        <div class="top-actions">
-          <label class="account-switch-wrap">
-            <span class="visually-hidden">Trading account</span>
-            <select id="account-switch" class="account-switch hidden" aria-label="Trading account"></select>
-          </label>
-          <span id="user-label" class="muted small"></span>
-          <button type="button" id="btn-logout" class="btn small ghost">Log out</button>
-        </div>
-      </header>
+        <span id="user-label" class="muted small"></span>
+      </div>
 
       <main class="main">
         <!-- Home -->
@@ -106,8 +101,20 @@
           </div>
         </div>
 
-        <!-- Danger -->
-        <div id="tab-danger" class="tab-panel hidden">
+        <!-- Account -->
+        <div id="tab-account" class="tab-panel hidden">
+          <div class="card">
+            <h2>Trading account</h2>
+            <p class="muted small">Alerts, orders, and the kill switch use the account selected here.</p>
+            <label class="account-switch-wrap hidden">
+              <span class="account-switch-label">Active account</span>
+              <select id="account-switch" class="account-switch hidden" aria-label="Trading account"></select>
+            </label>
+            <p class="muted small account-refresh">
+              <a href="/auth/ctrader/login">Add / refresh accounts</a>
+              &mdash; keep at least one current account checked on the cTrader grant screen.
+            </p>
+          </div>
           <div class="card danger-card">
             <h2>Kill switch</h2>
             <p>Closes <strong>all open positions</strong> on the <strong>selected</strong> cTrader account and blocks Factor from placing new trades on that account until you resume. Other linked accounts are not affected.</p>
@@ -119,9 +126,9 @@
           </div>
           <div class="card">
             <h2>Session</h2>
-            <p class="muted small">Sign out of Factor on this device. Does not close positions or change kill switch.</p>
+            <p class="muted small">Sign out of Factor on this device. Does not close positions or change the kill switch.</p>
             <div class="btn-row danger-session-actions">
-              <button type="button" id="btn-logout-danger" class="btn ghost">Log out</button>
+              <button type="button" id="btn-logout" class="btn ghost">Log out</button>
             </div>
           </div>
         </div>
@@ -130,6 +137,6 @@
 
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/static/js/app.js?v=14"></script>
+  <script src="/static/js/app.js?v=15"></script>
 </body>
 </html>

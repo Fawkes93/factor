@@ -1172,8 +1172,6 @@ function bind() {
     toast("Logged out");
   }
   $("#btn-logout").addEventListener("click", doLogout);
-  const btnLogoutDanger = $("#btn-logout-danger");
-  if (btnLogoutDanger) btnLogoutDanger.addEventListener("click", doLogout);
 
   const accountSwitch = $("#account-switch");
   if (accountSwitch) {
