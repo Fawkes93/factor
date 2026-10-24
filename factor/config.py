@@ -73,6 +73,8 @@ KILL_TOKEN = FACTOR_ADMIN_TOKEN  # alias
 # Optional default cTrader account for the AI execution API.
 # When unset and more than one account is connected, requests must send account_id.
 FACTOR_AI_ACCOUNT_ID = (os.getenv("FACTOR_AI_ACCOUNT_ID") or "").strip()
+# Bot username without @. Used only to build the Telegram link on the AI trader card.
+TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 
 # ---------------------------------------------------------------------------
 # Reaktor (webhook is the live path; URL/key optional legacy)

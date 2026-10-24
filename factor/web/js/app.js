@@ -332,6 +332,7 @@ const ALERT_KINDS = [
   { id: "asia_breakout_h", label: "Asia Overnight H" },
   { id: "dawn_cross", label: "Dawn Cross" },
   { id: "crt", label: "CRT" },
+  { id: "ai_gold", label: "AI trader" },
 ];
 
 function isAsiaBox(kind) {
@@ -344,6 +345,10 @@ function isSessionManaged(kind) {
 
 function isCrt(kind) {
   return kind === "crt";
+}
+
+function isAiTrader(kind) {
+  return kind === "ai_gold";
 }
 
 function isBreakevenOff(kind) {
@@ -379,6 +384,7 @@ const KIND_HINTS = {
     "Asia Overnight H: Bucharest box, then pullback. SL/TP from Reaktor unless Override is on.",
   dawn_cross: "Chișinău 02:00–06:00 5m cross. SL/TP and flatten hour come from Reaktor.",
   crt: "Half at TP1, stop stays, flat Fri 23:45.",
+  ai_gold: "Grok recommends XAUUSD. These limits are enforced in code. Link Telegram once.",
 };
 
 const PREF_DIFF_FIELDS = [
@@ -391,16 +397,22 @@ const PREF_DIFF_FIELDS = [
   "sl_tp_override",
   "breakeven_half_tp",
   "breakeven_fraction",
+  "min_volume_lots",
+  "max_volume_lots",
+  "min_rr",
+  "max_rr",
+  "daily_loss_cap_usd",
 ];
 
 function newPref(kind = "candle") {
   // Spike-family defaults match typical tighter stops (editable after add)
   const spikeLike = kind === "spike" || kind === "spike_neo";
   const session = isBreakevenOff(kind);
+  const ai = isAiTrader(kind);
   // Continuation after pullback — same risk shell as range by default
   return {
     kind,
-    symbol: ALERT_SYMBOLS[0].id,
+    symbol: ai ? "XAU/USD" : ALERT_SYMBOLS[0].id,
     enabled: true,
     max_concurrent: 1,
     max_per_day: session || spikeLike ? 1 : 5,
@@ -410,6 +422,11 @@ function newPref(kind = "candle") {
     breakeven_half_tp: session ? false : true,
     breakeven_fraction: 0.5,
     sl_tp_override: false,
+    min_volume_lots: 0.01,
+    max_volume_lots: 0.01,
+    min_rr: 1.5,
+    max_rr: "",
+    daily_loss_cap_usd: 50,
   };
 }
 
@@ -531,7 +548,18 @@ function baselineByKey() {
 }
 
 function sameValue(field, a, b) {
-  if (field === "volume_lots" || field === "breakeven_fraction") {
+  if (
+    field === "volume_lots" ||
+    field === "breakeven_fraction" ||
+    field === "min_volume_lots" ||
+    field === "max_volume_lots" ||
+    field === "min_rr" ||
+    field === "max_rr" ||
+    field === "daily_loss_cap_usd"
+  ) {
+    if (a === "" || a == null || b === "" || b == null) {
+      return (a === "" || a == null) && (b === "" || b == null);
+    }
     const na = Number(a);
     const nb = Number(b);
     if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) < 1e-9;
@@ -607,6 +635,11 @@ function prefPayload(p) {
     breakeven_half_tp: !!p.breakeven_half_tp,
     breakeven_fraction: Number(p.breakeven_fraction),
     sl_tp_override: !!p.sl_tp_override,
+    min_volume_lots: Number(p.min_volume_lots ?? 0.01),
+    max_volume_lots: Number(p.max_volume_lots ?? p.volume_lots ?? 0.01),
+    min_rr: Number(p.min_rr ?? 1.5),
+    max_rr: p.max_rr === "" || p.max_rr == null ? null : Number(p.max_rr),
+    daily_loss_cap_usd: Number(p.daily_loss_cap_usd ?? 50),
   };
 }
 
@@ -716,6 +749,50 @@ function asiaRiskFields(p) {
           <p class="muted small pref-note">${note}</p>`;
 }
 
+function aiTraderFields(p) {
+  const linked = !!(state.me && state.me.user && state.me.user.telegram_linked);
+  const maxRr = p.max_rr == null ? "" : p.max_rr;
+  return `
+          <label class="field">Max concurrent
+            <input type="number" name="max_concurrent" min="0" step="1" value="${Number(
+              p.max_concurrent ?? 1
+            )}" />
+          </label>
+          <label class="field">Min lots
+            <input type="number" name="min_volume_lots" min="0.01" step="0.01" value="${Number(
+              p.min_volume_lots ?? 0.01
+            )}" />
+          </label>
+          <label class="field">Max lots
+            <input type="number" name="max_volume_lots" min="0.01" step="0.01" value="${Number(
+              p.max_volume_lots ?? p.volume_lots ?? 0.01
+            )}" />
+          </label>
+          <label class="field">Min RR
+            <input type="number" name="min_rr" min="0.1" step="0.1" value="${Number(
+              p.min_rr ?? 1.5
+            )}" />
+          </label>
+          <label class="field">Max RR
+            <input type="number" name="max_rr" min="0.1" step="0.1" placeholder="no cap" value="${maxRr}" />
+          </label>
+          <label class="field">Daily loss cap USD
+            <input type="number" name="daily_loss_cap_usd" min="1" step="1" value="${Number(
+              p.daily_loss_cap_usd ?? 50
+            )}" />
+          </label>
+          <input type="hidden" name="max_per_day" value="${Number(p.max_per_day ?? 5)}" />
+          <input type="hidden" name="volume_lots" value="${Number(
+            p.max_volume_lots ?? p.volume_lots ?? 0.01
+          )}" />
+          <input type="hidden" name="sl_points" value="${Number(p.sl_points ?? 1000)}" />
+          <input type="hidden" name="tp_points" value="${Number(p.tp_points ?? 1000)}" />
+          <p class="muted small pref-note">Stops and targets come from the analysis. Lots are clamped to this range.</p>
+          <p class="muted small pref-note">Telegram: ${
+            linked ? "linked" : "not linked"
+          }. <button type="button" class="btn small ghost btn-telegram-link">Link Telegram</button></p>`;
+}
+
 function renderPrefs() {
   const root = $("#prefs-list");
   const addWrap = $("#prefs-add-wrap");
@@ -759,9 +836,9 @@ function renderPrefs() {
               hint
             )}">${kindSelect(p.kind)}</select>
             <span class="kind-help" title="${escapeHtml(hint)}" aria-label="About this alert type">?</span>
-            <select name="symbol" class="symbol-select" aria-label="Symbol">${symbolSelect(
-              p.symbol
-            )}</select>
+            <select name="symbol" class="symbol-select" aria-label="Symbol" ${
+              isAiTrader(p.kind) ? "disabled" : ""
+            }>${symbolSelect(isAiTrader(p.kind) ? "XAU/USD" : p.symbol)}</select>
           </div>
           <button type="button" class="btn-icon danger-icon btn-delete-pref" title="Delete alert permanently" aria-label="Delete" ${
             prefsSaving ? "disabled" : ""
@@ -775,7 +852,10 @@ function renderPrefs() {
           </button>
         </div>
         <div class="pref-fields">
-          <label class="field">Max concurrent
+          ${
+            isAiTrader(p.kind)
+              ? aiTraderFields(p)
+              : `<label class="field">Max concurrent
             <input type="number" name="max_concurrent" min="0" step="1" value="${Number(
               p.max_concurrent ?? 1
             )}" />
@@ -819,6 +899,7 @@ function renderPrefs() {
               p.breakeven_fraction ?? 0.5
             )}" />
           </label>`
+          }`
           }
         </div>
         <div class="pref-card-actions">
@@ -906,6 +987,23 @@ function renderPrefs() {
         prefsSaving = false;
       }
     });
+
+    const linkBtn = card.querySelector(".btn-telegram-link");
+    if (linkBtn) {
+      linkBtn.addEventListener("click", async () => {
+        try {
+          const data = await api("/api/me/telegram/link", { method: "POST" });
+          if (!data.url) {
+            toast("Set TELEGRAM_BOT_USERNAME on Factor", "err");
+            return;
+          }
+          window.open(data.url, "_blank", "noopener");
+          toast("Open Telegram and press Start");
+        } catch (e) {
+          toast(e.message, "err");
+        }
+      });
+    }
 
     card.querySelector(".btn-save-pref").addEventListener("click", () => saveCard(i));
 
@@ -1028,17 +1126,29 @@ function collectPrefsFromDom() {
     const beEl = g("breakeven_half_tp");
     const bePctEl = g("breakeven_pct");
     const overrideEl = g("sl_tp_override");
+    const num = (name, fallback) => {
+      const el = g(name);
+      if (!el || el.value === "") return fallback;
+      const value = Number(el.value);
+      return Number.isFinite(value) ? value : fallback;
+    };
     const prev = prefsDraft[i];
+    const maxRrEl = g("max_rr");
     prefsDraft[i] = {
       ...prev,
       kind,
-      symbol: g("symbol").value.trim(),
+      symbol: (g("symbol").value || prev.symbol || "").trim(),
       enabled: g("enabled").checked,
-      max_concurrent: Number(g("max_concurrent").value),
-      max_per_day: Number(g("max_per_day").value),
-      volume_lots: Number(g("volume_lots").value),
-      sl_points: Number(g("sl_points").value),
-      tp_points: Number(g("tp_points").value),
+      max_concurrent: num("max_concurrent", prev.max_concurrent ?? 1),
+      max_per_day: num("max_per_day", prev.max_per_day ?? 5),
+      volume_lots: num("volume_lots", prev.volume_lots ?? 0.01),
+      sl_points: num("sl_points", prev.sl_points ?? 1000),
+      tp_points: num("tp_points", prev.tp_points ?? 1000),
+      min_volume_lots: num("min_volume_lots", prev.min_volume_lots ?? 0.01),
+      max_volume_lots: num("max_volume_lots", prev.max_volume_lots ?? prev.volume_lots ?? 0.01),
+      min_rr: num("min_rr", prev.min_rr ?? 1.5),
+      max_rr: maxRrEl && maxRrEl.value !== "" ? Number(maxRrEl.value) : "",
+      daily_loss_cap_usd: num("daily_loss_cap_usd", prev.daily_loss_cap_usd ?? 50),
       breakeven_half_tp: session ? false : beEl ? beEl.checked : true,
       breakeven_fraction: bePctEl
         ? bePercentToFraction(bePctEl.value)

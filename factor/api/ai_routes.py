@@ -14,6 +14,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from factor import config
+from factor.db import repos
 from factor.services.ai_orders import (
     AI_ORDER_LABEL,
     AiOrderError,
@@ -100,6 +101,20 @@ def get_ai_positions(
         return list_ai_positions(label=label, account_id=account_id)
     except AiOrderError as exc:
         return _error(exc)
+
+
+@router.get("/api/ai/subscribers")
+def get_ai_subscribers(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> Any:
+    """Accounts that turned the AI trader alert on and are not killed."""
+    _require_ai_auth(authorization, x_api_key)
+    try:
+        subscribers = repos.list_ai_subscribers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"subscribers failed: {exc}") from exc
+    return {"success": True, "count": len(subscribers), "subscribers": subscribers}
 
 
 @router.get("/api/ai/kill")

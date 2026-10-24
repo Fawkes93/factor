@@ -12,7 +12,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from factor.db.client import get_supabase
-from factor.rules.kinds import is_asia_box, is_crt, is_session_managed
+from factor.rules.kinds import (
+    AI_TRADER_KIND,
+    AI_TRADER_SYMBOL,
+    is_ai_trader,
+    is_asia_box,
+    is_crt,
+    is_session_managed,
+)
 
 T_USERS = "factor_users"
 T_CONN = "factor_ctrader_connections"
@@ -259,6 +266,33 @@ def upsert_user_by_ctid(
     if not ins.data:
         raise RuntimeError("failed to insert factor_users row")
     return ins.data[0]
+
+
+def set_telegram_link_code(user_id: str, code: str) -> None:
+    sb = get_supabase()
+    sb.table(T_USERS).update({"telegram_link_code": code}).eq("id", user_id).execute()
+
+
+def claim_telegram_chat(code: str, chat_id: int) -> bool:
+    """Bind a Telegram chat to the user who generated `code`. Single use."""
+    sb = get_supabase()
+    found = (
+        sb.table(T_USERS)
+        .select("id")
+        .eq("telegram_link_code", code)
+        .limit(1)
+        .execute()
+    )
+    if not found.data:
+        return False
+    user_id = found.data[0]["id"]
+    (
+        sb.table(T_USERS)
+        .update({"telegram_chat_id": int(chat_id), "telegram_link_code": None})
+        .eq("id", user_id)
+        .execute()
+    )
+    return True
 
 
 def get_user(user_id: str) -> Optional[Dict[str, Any]]:
@@ -553,7 +587,36 @@ _PREF_FIELD_CAST = {
     "sl_tp_override": _as_bool,
     "breakeven_half_tp": _as_bool,
     "breakeven_fraction": lambda v: _normalize_breakeven_fraction(v),
+    "min_volume_lots": lambda v: float(v),
+    "max_volume_lots": lambda v: float(v),
+    "min_rr": lambda v: float(v),
+    "max_rr": lambda v: None if v is None or v == "" else float(v),
+    "daily_loss_cap_usd": lambda v: float(v),
 }
+
+
+def validate_ai_limits(fields: Dict[str, Any]) -> None:
+    """Reject an AI trader card that cannot be applied."""
+    min_lots = fields.get("min_volume_lots")
+    max_lots = fields.get("max_volume_lots")
+    if min_lots is not None and not (float(min_lots) > 0):
+        raise ValueError("min lots must be > 0")
+    if max_lots is not None and not (float(max_lots) > 0):
+        raise ValueError("max lots must be > 0")
+    if min_lots is not None and max_lots is not None and float(max_lots) < float(min_lots):
+        raise ValueError("max lots must be >= min lots")
+    min_rr = fields.get("min_rr")
+    max_rr = fields.get("max_rr")
+    if min_rr is not None and not (float(min_rr) > 0):
+        raise ValueError("min reward:risk must be > 0")
+    if max_rr not in (None, "") and min_rr is not None and float(max_rr) < float(min_rr):
+        raise ValueError("max reward:risk must be >= min reward:risk")
+    cap = fields.get("daily_loss_cap_usd")
+    if cap is not None and not (float(cap) > 0):
+        raise ValueError("daily loss cap must be > 0")
+    concurrent = fields.get("max_concurrent")
+    if concurrent is not None and int(concurrent) < 0:
+        raise ValueError("max concurrent must be >= 0")
 
 
 def update_pref(
@@ -593,6 +656,8 @@ def update_pref(
         raise ValueError("max_concurrent must be >= 0")
     if "max_per_day" in clean and clean["max_per_day"] < 0:
         raise ValueError("max_per_day must be >= 0")
+    if is_ai_trader(kind) and symbol != AI_TRADER_SYMBOL:
+        raise ValueError("AI trader is XAU/USD only")
     if is_asia_box(kind):
         if "breakeven_half_tp" in clean:
             clean["breakeven_half_tp"] = False
@@ -608,12 +673,23 @@ def update_pref(
     existing = get_pref(user_id, int(account_id), kind, symbol)
     if not existing:
         raise LookupError("alert not found")
+    if is_ai_trader(kind):
+        validate_ai_limits({**existing, **clean})
 
     sb = get_supabase()
     payload = dict(clean)
     optional = [
         col
-        for col in ("sl_tp_override", "breakeven_fraction", "breakeven_half_tp")
+        for col in (
+            "min_volume_lots",
+            "max_volume_lots",
+            "min_rr",
+            "max_rr",
+            "daily_loss_cap_usd",
+            "sl_tp_override",
+            "breakeven_fraction",
+            "breakeven_half_tp",
+        )
         if col in payload
     ]
     dropped: List[str] = []
@@ -721,6 +797,11 @@ def upsert_pref(
     breakeven_fraction: float = 0.5,
     sl_tp_override: bool = False,
     account_id: int,
+    min_volume_lots: Optional[float] = None,
+    max_volume_lots: Optional[float] = None,
+    min_rr: Optional[float] = None,
+    max_rr: Optional[float] = None,
+    daily_loss_cap_usd: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     One row per (user_id, account_id, kind, symbol). Update if exists; otherwise insert.
@@ -738,6 +819,36 @@ def upsert_pref(
     else:
         # Override only changes Asia box alerts (Reaktor box vs user points).
         sl_tp_override = False
+    ai_extra: Dict[str, Any] = {}
+    if is_ai_trader(kind):
+        if symbol != AI_TRADER_SYMBOL:
+            raise ValueError("AI trader is XAU/USD only")
+        min_volume_lots = 0.01 if min_volume_lots is None else float(min_volume_lots)
+        max_volume_lots = float(volume_lots if max_volume_lots is None else max_volume_lots)
+        min_rr = 1.5 if min_rr is None else float(min_rr)
+        daily_loss_cap_usd = 50.0 if daily_loss_cap_usd is None else float(daily_loss_cap_usd)
+        if max_rr in ("",):
+            max_rr = None
+        elif max_rr is not None:
+            max_rr = float(max_rr)
+        validate_ai_limits(
+            {
+                "min_volume_lots": min_volume_lots,
+                "max_volume_lots": max_volume_lots,
+                "min_rr": min_rr,
+                "max_rr": max_rr,
+                "daily_loss_cap_usd": daily_loss_cap_usd,
+                "max_concurrent": max_concurrent,
+            }
+        )
+        volume_lots = max_volume_lots
+        ai_extra = {
+            "min_volume_lots": min_volume_lots,
+            "max_volume_lots": max_volume_lots,
+            "min_rr": min_rr,
+            "max_rr": max_rr,
+            "daily_loss_cap_usd": daily_loss_cap_usd,
+        }
     be_frac = _normalize_breakeven_fraction(breakeven_fraction, 0.5)
     sl_tp_override = bool(sl_tp_override)
     account_id = int(account_id)
@@ -760,6 +871,7 @@ def upsert_pref(
             "breakeven_half_tp": bool(breakeven_half_tp),
             "breakeven_fraction": be_frac,
             "sl_tp_override": sl_tp_override,
+            **ai_extra,
         },
         {
             **base,
@@ -864,6 +976,11 @@ def replace_prefs_for_user(
             breakeven_half_tp=bool(be_raw),
             breakeven_fraction=_normalize_breakeven_fraction(be_frac, 0.5),
             sl_tp_override=bool(raw.get("sl_tp_override", False)),
+            min_volume_lots=raw.get("min_volume_lots"),
+            max_volume_lots=raw.get("max_volume_lots"),
+            min_rr=raw.get("min_rr"),
+            max_rr=raw.get("max_rr"),
+            daily_loss_cap_usd=raw.get("daily_loss_cap_usd"),
         )
         saved.append(row)
     return saved
@@ -913,6 +1030,39 @@ def list_candidates_for_alert(
             continue
         out.append({"user": user, "pref": pref, "connection": conn})
     return out
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def list_ai_subscribers() -> List[Dict[str, Any]]:
+    """Enabled AI trader accounts that are allowed to trade."""
+    rows = []
+    for item in list_candidates_for_alert(kind=AI_TRADER_KIND, symbol=AI_TRADER_SYMBOL):
+        pref = item["pref"]
+        user = item["user"]
+        conn = item["connection"]
+        max_lots = _float_or_none(pref.get("max_volume_lots"))
+        if max_lots is None:
+            max_lots = float(pref.get("volume_lots") or 0.01)
+        min_lots = _float_or_none(pref.get("min_volume_lots")) or max_lots
+        rows.append(
+            {
+                "user_id": user["id"],
+                "account_id": int(conn["account_id"]),
+                "telegram_chat_id": user.get("telegram_chat_id"),
+                "max_concurrent": int(pref.get("max_concurrent") or 1),
+                "min_volume_lots": min_lots,
+                "max_volume_lots": max_lots,
+                "min_rr": float(pref.get("min_rr") or 1.5),
+                "max_rr": _float_or_none(pref.get("max_rr")),
+                "daily_loss_cap_usd": float(pref.get("daily_loss_cap_usd") or 50),
+            }
+        )
+    return rows
 
 
 # ---------------------------------------------------------------------------

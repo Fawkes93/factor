@@ -212,6 +212,7 @@ def me(request: Request):
             "trading_enabled": True if trading is None else bool(trading),
             "ctrader_ctid": user.get("ctrader_ctid"),
             "active_account_id": account_id,
+            "telegram_linked": bool(user.get("telegram_chat_id")),
         },
         "accounts": accounts,
         "connection": safe_conn,
@@ -392,6 +393,11 @@ _PREF_PATCH_KEYS = (
     "sl_tp_override",
     "breakeven_half_tp",
     "breakeven_fraction",
+    "min_volume_lots",
+    "max_volume_lots",
+    "min_rr",
+    "max_rr",
+    "daily_loss_cap_usd",
 )
 
 
@@ -443,6 +449,11 @@ async def create_pref(kind: str, symbol: str, request: Request):
             breakeven_half_tp=bool(body.get("breakeven_half_tp", True)),
             breakeven_fraction=float(body.get("breakeven_fraction", 0.5) or 0.5),
             sl_tp_override=bool(body.get("sl_tp_override", False)),
+            min_volume_lots=body.get("min_volume_lots"),
+            max_volume_lots=body.get("max_volume_lots"),
+            min_rr=body.get("min_rr"),
+            max_rr=body.get("max_rr"),
+            daily_loss_cap_usd=body.get("daily_loss_cap_usd"),
         )
     except repos.PrefSchemaError as e:
         raise HTTPException(400, str(e)) from e
@@ -451,6 +462,24 @@ async def create_pref(kind: str, symbol: str, request: Request):
     except Exception as e:
         raise HTTPException(500, f"save pref failed: {e}") from e
     return {"pref": row}
+
+
+@router.post("/api/me/telegram/link")
+def telegram_link(request: Request):
+    """One-time code the AI bot accepts in /start to store this user's chat."""
+    import secrets
+
+    from factor import config
+
+    uid = _require_user_id(request)
+    code = secrets.token_urlsafe(16)
+    try:
+        repos.set_telegram_link_code(uid, code)
+    except Exception as e:
+        raise HTTPException(500, f"telegram link failed: {e}") from e
+    username = config.TELEGRAM_BOT_USERNAME
+    url = f"https://t.me/{username}?start={code}" if username else None
+    return {"code": code, "url": url}
 
 
 @router.delete("/api/me/prefs/{kind}/{symbol:path}")

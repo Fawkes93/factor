@@ -11,6 +11,10 @@ SESSION_KINDS = frozenset({"asia_breakout", "asia_breakout_h", "dawn_cross"})
 # CRT has its own protect path (partial at TP1, no trail, Friday flatten).
 CRT_KIND = "crt"
 
+# Dashboard alert the AI orchestrator trades. Symbol is always XAU/USD.
+AI_TRADER_KIND = "ai_gold"
+AI_TRADER_SYMBOL = "XAU/USD"
+
 
 def is_asia_box(kind: str) -> bool:
     return str(kind or "").strip() in ASIA_BOX_KINDS
@@ -22,3 +26,7 @@ def is_session_managed(kind: str) -> bool:
 
 def is_crt(kind: str) -> bool:
     return str(kind or "").strip() == CRT_KIND
+
+
+def is_ai_trader(kind: str) -> bool:
+    return str(kind or "").strip() == AI_TRADER_KIND

@@ -162,6 +162,7 @@ def create_app() -> FastAPI:
             "ai_positions": "GET /api/ai/positions",
             "ai_manage": "POST /api/ai/positions/manage",
             "ai_kill": "GET /api/ai/kill",
+            "ai_subscribers": "GET /api/ai/subscribers",
         }
 
     def _health_payload() -> Dict[str, Any]:
