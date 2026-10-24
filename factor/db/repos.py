@@ -431,6 +431,13 @@ def get_connection(
     return res.data[0] if res.data else None
 
 
+def list_all_connections() -> List[Dict[str, Any]]:
+    """Every cTrader connection row. Used to route the AI execution API."""
+    sb = get_supabase()
+    res = sb.table(T_CONN).select("*").execute()
+    return list(res.data or [])
+
+
 def list_connections(user_id: str) -> List[Dict[str, Any]]:
     sb = get_supabase()
     res = sb.table(T_CONN).select("*").eq("user_id", user_id).execute()
@@ -930,8 +937,12 @@ def insert_order(
     broker_position_id: Optional[str] = None,
     detail: Optional[Dict[str, Any]] = None,
     account_id: Optional[int] = None,
+    label: Optional[str] = None,
 ) -> Dict[str, Any]:
     sb = get_supabase()
+    detail_out = dict(detail or {})
+    if label:
+        detail_out["label"] = label
     payload: Dict[str, Any] = {
         "user_id": user_id,
         "reaktor_alert_id": int(reaktor_alert_id),
@@ -946,14 +957,30 @@ def insert_order(
         "volume_lots": volume_lots,
         "broker_order_id": broker_order_id,
         "broker_position_id": broker_position_id,
-        "detail": detail or {},
+        "detail": detail_out,
     }
     if account_id is not None:
         payload["account_id"] = int(account_id)
-    res = sb.table(T_ORDERS).insert(payload).execute()
-    if not res.data:
-        raise RuntimeError("insert_order failed")
-    return res.data[0]
+    if label:
+        payload["label"] = label
+
+    def _insert(row: Dict[str, Any]) -> Dict[str, Any]:
+        res = sb.table(T_ORDERS).insert(row).execute()
+        if not res.data:
+            raise RuntimeError("insert_order failed")
+        return res.data[0]
+
+    try:
+        return _insert(payload)
+    except Exception as exc:
+        # sql/008_ai_order_label.sql may not be applied yet. Retry without the
+        # column only when the database rejects that field. The label stays
+        # inside detail either way.
+        if "label" not in payload or "label" not in str(exc).lower():
+            raise
+        fallback = dict(payload)
+        fallback.pop("label", None)
+        return _insert(fallback)
 
 
 def list_orders(

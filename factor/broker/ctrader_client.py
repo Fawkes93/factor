@@ -54,6 +54,8 @@ POSITION_STATUS_OPEN = 1
 POSITION_STATUS_CREATED = 2  # still treat as exposure if present
 
 ORDER_TYPE_MARKET = 1
+ORDER_TYPE_LIMIT = 2
+ORDER_TYPE_STOP = 3
 TRADE_SIDE_BUY = 1
 TRADE_SIDE_SELL = 2
 
@@ -65,6 +67,72 @@ _symbol_map_account: Optional[int] = None
 
 class CTraderError(Exception):
     pass
+
+
+def normalize_open_position(
+    p: Dict[str, Any],
+    id_to_name: Optional[Dict[int, str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    One reconcile position → the dict BE and the AI API share.
+
+    Label and comment come from tradeData (the order that opened the position).
+    """
+    if not isinstance(p, dict):
+        return None
+    names = id_to_name or {}
+    trade = p.get("tradeData") if isinstance(p.get("tradeData"), dict) else {}
+    pid = p.get("positionId") or p.get("id")
+    try:
+        pid_i = int(pid)
+    except (TypeError, ValueError):
+        return None
+    side_raw = trade.get("tradeSide") or p.get("tradeSide") or p.get("side")
+    try:
+        side_i = int(side_raw) if side_raw is not None else 0
+    except (TypeError, ValueError):
+        side_i = 0
+    if side_i == TRADE_SIDE_SELL or str(side_raw).upper() in ("SELL", "2"):
+        side = "SELL"
+    else:
+        side = "BUY"
+    entry = p.get("price") or p.get("entryPrice") or trade.get("price")
+    sl = p.get("stopLoss") or p.get("stopLossPrice")
+    tp = p.get("takeProfit") or p.get("takeProfitPrice")
+    sid = p.get("symbolId") or trade.get("symbolId")
+    broker_symbol = None
+    try:
+        if sid is not None:
+            broker_symbol = names.get(int(sid))
+    except (TypeError, ValueError):
+        broker_symbol = None
+    label = trade.get("label")
+    if label is None:
+        label = p.get("label")
+    comment = trade.get("comment")
+    if comment is None:
+        comment = p.get("comment")
+    opened = trade.get("openTimestamp")
+    if opened is None:
+        opened = trade.get("open_timestamp")
+    try:
+        opened_i = int(opened) if opened is not None else None
+    except (TypeError, ValueError):
+        opened_i = None
+    return {
+        "position_id": pid_i,
+        "side": side,
+        "entry_price": float(entry) if entry is not None else None,
+        "stop_loss": float(sl) if sl is not None else None,
+        "take_profit": float(tp) if tp is not None else None,
+        "symbol_id": int(sid) if sid is not None else None,
+        "broker_symbol": broker_symbol,
+        "volume": p.get("volume") or trade.get("volume"),
+        "label": str(label or ""),
+        "comment": str(comment or ""),
+        "open_timestamp": opened_i,
+        "raw": p,
+    }
 
 
 class CTraderClient:
@@ -496,44 +564,9 @@ class CTraderClient:
         id_to_name = {int(v): k for k, v in self._symbol_ids.items()}
         out: List[Dict[str, Any]] = []
         for p in raw:
-            trade = p.get("tradeData") if isinstance(p.get("tradeData"), dict) else {}
-            pid = p.get("positionId") or p.get("id")
-            try:
-                pid_i = int(pid)
-            except (TypeError, ValueError):
-                continue
-            side_raw = trade.get("tradeSide") or p.get("tradeSide") or p.get("side")
-            try:
-                side_i = int(side_raw) if side_raw is not None else 0
-            except (TypeError, ValueError):
-                side_i = 0
-            if side_i == TRADE_SIDE_SELL or str(side_raw).upper() in ("SELL", "2"):
-                side = "SELL"
-            else:
-                side = "BUY"
-            entry = p.get("price") or p.get("entryPrice") or trade.get("price")
-            sl = p.get("stopLoss") or p.get("stopLossPrice")
-            tp = p.get("takeProfit") or p.get("takeProfitPrice")
-            sid = p.get("symbolId") or trade.get("symbolId")
-            broker_symbol = None
-            try:
-                if sid is not None:
-                    broker_symbol = id_to_name.get(int(sid))
-            except (TypeError, ValueError):
-                broker_symbol = None
-            out.append(
-                {
-                    "position_id": pid_i,
-                    "side": side,
-                    "entry_price": float(entry) if entry is not None else None,
-                    "stop_loss": float(sl) if sl is not None else None,
-                    "take_profit": float(tp) if tp is not None else None,
-                    "symbol_id": int(sid) if sid is not None else None,
-                    "broker_symbol": broker_symbol,
-                    "volume": p.get("volume") or trade.get("volume"),
-                    "raw": p,
-                }
-            )
+            row = normalize_open_position(p, id_to_name)
+            if row is not None:
+                out.append(row)
         return out
 
     def close_all_positions(self) -> list:
@@ -621,6 +654,73 @@ class CTraderClient:
             payload["relativeTakeProfit"] = int(relative_tp)
 
         # Execution comes as event 2126; errors as 2132 / 2142
+        msg = self._request(
+            PT_NEW_ORDER_REQ,
+            payload,
+            expect_any=(PT_EXECUTION_EVENT, PT_ORDER_ERROR_EVENT, PT_ERROR_RES),
+        )
+        pt = int(msg.get("payloadType") or 0)
+        body = msg.get("payload") or {}
+        if pt in (PT_ORDER_ERROR_EVENT, PT_ERROR_RES):
+            raise CTraderError(f"order rejected: {body}")
+        return body
+
+    def place_order(
+        self,
+        *,
+        broker_symbol: str,
+        side: str,
+        volume_protocol: int,
+        order_type: str,
+        client_order_id: str,
+        comment: str = "",
+        label: str = "",
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        relative_sl: int = 0,
+        relative_tp: int = 0,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        ProtoOANewOrderReq for market, limit, or stop.
+
+        Market orders take relative SL/TP (absolute prices are rejected on
+        MARKET). Limit and stop orders take absolute prices.
+        """
+        kind = str(order_type or "").strip().lower()
+        type_code = {
+            "market": ORDER_TYPE_MARKET,
+            "limit": ORDER_TYPE_LIMIT,
+            "stop": ORDER_TYPE_STOP,
+        }.get(kind)
+        if type_code is None:
+            raise CTraderError(f"unsupported order type {order_type}")
+        symbol_id = self.resolve_symbol_id(broker_symbol)
+        trade_side = TRADE_SIDE_BUY if side.upper() == "BUY" else TRADE_SIDE_SELL
+        payload: Dict[str, Any] = {
+            "ctidTraderAccountId": self.account_id,
+            "symbolId": symbol_id,
+            "orderType": type_code,
+            "tradeSide": trade_side,
+            "volume": int(volume_protocol),
+            "clientOrderId": client_order_id[:50],
+            "label": (label or "")[:100],
+        }
+        if comment:
+            payload["comment"] = comment[:512]
+        if limit_price is not None:
+            payload["limitPrice"] = float(limit_price)
+        if stop_price is not None:
+            payload["stopPrice"] = float(stop_price)
+        if int(relative_sl or 0) > 0:
+            payload["relativeStopLoss"] = int(relative_sl)
+        if int(relative_tp or 0) > 0:
+            payload["relativeTakeProfit"] = int(relative_tp)
+        if stop_loss is not None:
+            payload["stopLoss"] = float(stop_loss)
+        if take_profit is not None:
+            payload["takeProfit"] = float(take_profit)
         msg = self._request(
             PT_NEW_ORDER_REQ,
             payload,

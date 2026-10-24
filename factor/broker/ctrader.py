@@ -265,6 +265,160 @@ class CTraderBroker:
             detail=detail,
         )
 
+    def place_labeled_order(
+        self,
+        *,
+        broker_symbol: str,
+        side: str,
+        volume_protocol: int,
+        order_type: str,
+        label: str,
+        comment: str = "",
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        relative_sl: int = 0,
+        relative_tp: int = 0,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> OrderResult:
+        """
+        Place one market, limit, or stop order with an explicit cTrader label.
+
+        Used by the AI execution API. Reaktor orders stay on place_market_with_sl_tp.
+        """
+        if not self.configured():
+            return OrderResult(
+                ok=False,
+                status="error",
+                message=(
+                    "cTrader credentials missing. Set CTRADER_CLIENT_ID, "
+                    "CTRADER_CLIENT_SECRET, access token, account id"
+                ),
+            )
+        client_order_id = f"ai-{uuid.uuid4().hex[:12]}"
+        detail: Dict[str, Any] = {
+            "host": self._host,
+            "account_id": self._account_id,
+            "broker_symbol": broker_symbol,
+            "side": side,
+            "order_type": order_type,
+            "volume_protocol": int(volume_protocol),
+            "label": label,
+            "comment": comment,
+            "limit_price": limit_price,
+            "stop_price": stop_price,
+            "relative_sl": int(relative_sl or 0),
+            "relative_tp": int(relative_tp or 0),
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "client_order_id": client_order_id,
+            "dry_run": self._dry_run,
+        }
+        print(
+            f"📤 AI cTrader {order_type} {side} {broker_symbol} "
+            f"vol={volume_protocol} label={label} "
+            f"dry_run={self._dry_run} account={self._account_id}"
+        )
+        if self._dry_run:
+            return OrderResult(
+                ok=True,
+                status="open",
+                broker_order_id=f"dry-{client_order_id}",
+                message="dry_run — not sent to cTrader",
+                detail=detail,
+            )
+        with self._lock:
+            try:
+                with self._new_client() as client:
+                    exec_body = client.place_order(
+                        broker_symbol=broker_symbol,
+                        side=side,
+                        volume_protocol=int(volume_protocol),
+                        order_type=order_type,
+                        client_order_id=client_order_id,
+                        comment=comment,
+                        label=label,
+                        limit_price=limit_price,
+                        stop_price=stop_price,
+                        relative_sl=int(relative_sl or 0),
+                        relative_tp=int(relative_tp or 0),
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                    )
+                self._open_cache_at = 0.0
+            except CTraderError as e:
+                print(f"❌ AI cTrader error: {e}")
+                return OrderResult(
+                    ok=False,
+                    status="rejected",
+                    message=str(e),
+                    detail=detail,
+                )
+            except Exception as e:
+                print(f"❌ AI cTrader unexpected: {e}")
+                return OrderResult(
+                    ok=False,
+                    status="error",
+                    message=f"unexpected: {e}",
+                    detail=detail,
+                )
+        detail["execution"] = exec_body
+        order_id = _extract_order_id(exec_body) or client_order_id
+        position_id = _extract_position_id(exec_body)
+        if position_id:
+            detail["position_id"] = position_id
+        print(f"✅ AI cTrader order ok id={order_id} label={label}")
+        return OrderResult(
+            ok=True,
+            status="open",
+            broker_order_id=str(order_id),
+            message="order accepted",
+            detail=detail,
+        )
+
+    def describe_open_positions(self) -> list:
+        """
+        Open positions plus net unrealized P/L and one spot per symbol.
+
+        Spot or P/L failures leave those fields empty. The position list
+        itself still returns.
+        """
+        if not self.configured() or self._dry_run:
+            return []
+        with self._lock:
+            with self._new_client() as client:
+                rows = client.list_open_positions_info()
+                pnl: Dict[int, Any] = {}
+                try:
+                    for item in client.get_unrealized_pnl():
+                        try:
+                            pnl[int(item["position_id"])] = item.get("net")
+                        except (TypeError, ValueError, KeyError):
+                            continue
+                except CTraderError as e:
+                    print(f"⚠️  unrealized pnl failed: {e}")
+                spots: Dict[str, Dict[str, float]] = {}
+                symbols = {
+                    str(row.get("broker_symbol"))
+                    for row in rows
+                    if row.get("broker_symbol")
+                }
+                for sym in symbols:
+                    try:
+                        spots[sym] = client.get_spot(sym)
+                    except CTraderError as e:
+                        print(f"⚠️  spot {sym} failed: {e}")
+                for row in rows:
+                    try:
+                        row["unrealized_pnl"] = pnl.get(int(row["position_id"]))
+                    except (TypeError, ValueError, KeyError):
+                        row["unrealized_pnl"] = None
+                    spot = spots.get(str(row.get("broker_symbol") or ""))
+                    if spot:
+                        row["bid"] = spot.get("bid")
+                        row["ask"] = spot.get("ask")
+                return rows
+
     def _new_client(self) -> CTraderClient:
         return CTraderClient(
             host=self._host,

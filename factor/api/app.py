@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from factor import __version__, config
+from factor.api.ai_routes import router as ai_router
 from factor.auth.routes import router as auth_router
 from factor.db.client import supabase_configured
 from factor.engine_multi import process_alert_multi
@@ -114,6 +115,7 @@ def create_app() -> FastAPI:
         redirect_slashes=False,
     )
     app.include_router(auth_router)
+    app.include_router(ai_router)
 
     if WEB_DIR.is_dir():
         app.mount(
@@ -156,6 +158,10 @@ def create_app() -> FastAPI:
             "login": "/auth/ctrader/login",
             "mode": "multi_user",
             "supabase_configured": supabase_configured(),
+            "ai_orders": "POST /api/ai/orders",
+            "ai_positions": "GET /api/ai/positions",
+            "ai_manage": "POST /api/ai/positions/manage",
+            "ai_kill": "GET /api/ai/kill",
         }
 
     def _health_payload() -> Dict[str, Any]:

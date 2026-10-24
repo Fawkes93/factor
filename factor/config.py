@@ -70,6 +70,9 @@ FACTOR_ADMIN_TOKEN = (
     os.getenv("FACTOR_ADMIN_TOKEN") or os.getenv("KILL_TOKEN") or ""
 ).strip()
 KILL_TOKEN = FACTOR_ADMIN_TOKEN  # alias
+# Optional default cTrader account for the AI execution API.
+# When unset and more than one account is connected, requests must send account_id.
+FACTOR_AI_ACCOUNT_ID = (os.getenv("FACTOR_AI_ACCOUNT_ID") or "").strip()
 
 # ---------------------------------------------------------------------------
 # Reaktor (webhook is the live path; URL/key optional legacy)
