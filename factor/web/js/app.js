@@ -384,7 +384,7 @@ const KIND_HINTS = {
     "Asia Overnight H: Bucharest box, then pullback. SL/TP from Reaktor unless Override is on.",
   dawn_cross: "Chișinău 02:00–06:00 5m cross. SL/TP and flatten hour come from Reaktor.",
   crt: "Half at TP1, stop stays, flat Fri 23:45.",
-  ai_gold: "Grok recommends XAUUSD. These limits are enforced in code. Link Telegram once.",
+  ai_gold: "Grok recommends XAUUSD. These limits are enforced in code. In Telegram send /subscribe.",
 };
 
 const PREF_DIFF_FIELDS = [
@@ -790,7 +790,7 @@ function aiTraderFields(p) {
           <p class="muted small pref-note">Stops and targets come from the analysis. Lots are clamped to this range.</p>
           <p class="muted small pref-note">Telegram: ${
             linked ? "linked" : "not linked"
-          }. <button type="button" class="btn small ghost btn-telegram-link">Link Telegram</button></p>`;
+          }. Send /subscribe to the bot.</p>`;
 }
 
 function renderPrefs() {
@@ -987,23 +987,6 @@ function renderPrefs() {
         prefsSaving = false;
       }
     });
-
-    const linkBtn = card.querySelector(".btn-telegram-link");
-    if (linkBtn) {
-      linkBtn.addEventListener("click", async () => {
-        try {
-          const data = await api("/api/me/telegram/link", { method: "POST" });
-          if (!data.url) {
-            toast("Set TELEGRAM_BOT_USERNAME on Factor", "err");
-            return;
-          }
-          window.open(data.url, "_blank", "noopener");
-          toast("Open Telegram and press Start");
-        } catch (e) {
-          toast(e.message, "err");
-        }
-      });
-    }
 
     card.querySelector(".btn-save-pref").addEventListener("click", () => saveCard(i));
 
