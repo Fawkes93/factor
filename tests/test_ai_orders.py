@@ -227,6 +227,14 @@ def test_place_rejects_other_labels():
     with pytest.raises(AiOrderError) as exc:
         ai.place_ai_order(_market_body(label="factor"))
     assert "AI-GOLD-v1" in exc.value.message
+    assert "MANAN" in exc.value.message
+
+
+def test_place_accepts_manan_label(broker, inserted):
+    out = ai.place_ai_order(_market_body(label="MANAN"))
+    assert out["success"] is True
+    assert broker.placed[0]["label"] == "MANAN"
+    assert inserted["label"] == "MANAN"
 
 
 def test_place_rejects_buy_stop_above_entry():
@@ -323,6 +331,26 @@ def test_list_returns_only_the_ai_label(broker):
 def test_list_rejects_a_reaktor_label():
     with pytest.raises(AiOrderError):
         ai.list_ai_positions(label="factor")
+
+
+def test_list_can_return_manan_only(broker):
+    broker.positions = [
+        _pos(),
+        _pos(position_id=99, label="MANAN"),
+    ]
+    out = ai.list_ai_positions(label="MANAN")
+    assert out["success"] is True
+    assert out["label"] == "MANAN"
+    assert [row["position_id"] for row in out["positions"]] == ["99"]
+
+
+def test_manage_closes_a_manan_position(broker):
+    broker.positions = [_pos(label="MANAN")]
+    out = ai.manage_ai_position(
+        {"position_id": "67890", "action": "close", "label": "MANAN"}
+    )
+    assert out["success"] is True
+    assert broker.closed == [{"position_id": 67890, "volume": 100}]
 
 
 def test_manage_refuses_a_reaktor_position(broker):
