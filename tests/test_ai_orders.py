@@ -227,14 +227,14 @@ def test_place_rejects_other_labels():
     with pytest.raises(AiOrderError) as exc:
         ai.place_ai_order(_market_body(label="factor"))
     assert "AI-GOLD-v1" in exc.value.message
-    assert "MANAN" in exc.value.message
+    assert "ECHO" in exc.value.message
 
 
-def test_place_accepts_manan_label(broker, inserted):
-    out = ai.place_ai_order(_market_body(label="MANAN"))
+def test_place_accepts_echo_label(broker, inserted):
+    out = ai.place_ai_order(_market_body(label="ECHO"))
     assert out["success"] is True
-    assert broker.placed[0]["label"] == "MANAN"
-    assert inserted["label"] == "MANAN"
+    assert broker.placed[0]["label"] == "ECHO"
+    assert inserted["label"] == "ECHO"
 
 
 def test_place_rejects_buy_stop_above_entry():
@@ -333,21 +333,21 @@ def test_list_rejects_a_reaktor_label():
         ai.list_ai_positions(label="factor")
 
 
-def test_list_can_return_manan_only(broker):
+def test_list_can_return_echo_only(broker):
     broker.positions = [
         _pos(),
-        _pos(position_id=99, label="MANAN"),
+        _pos(position_id=99, label="ECHO"),
     ]
-    out = ai.list_ai_positions(label="MANAN")
+    out = ai.list_ai_positions(label="ECHO")
     assert out["success"] is True
-    assert out["label"] == "MANAN"
+    assert out["label"] == "ECHO"
     assert [row["position_id"] for row in out["positions"]] == ["99"]
 
 
-def test_manage_closes_a_manan_position(broker):
-    broker.positions = [_pos(label="MANAN")]
+def test_manage_closes_an_echo_position(broker):
+    broker.positions = [_pos(label="ECHO")]
     out = ai.manage_ai_position(
-        {"position_id": "67890", "action": "close", "label": "MANAN"}
+        {"position_id": "67890", "action": "close", "label": "ECHO"}
     )
     assert out["success"] is True
     assert broker.closed == [{"position_id": 67890, "volume": 100}]

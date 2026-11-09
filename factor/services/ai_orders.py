@@ -3,7 +3,7 @@ AI execution API.
 
 The orchestrator sends structured orders. Factor is the only side that talks
 to cTrader. Scheduled AI orders are labeled AI-GOLD-v1. Channel signals use
-MANAN. Reaktor orders stay on the webhook path and keep the cTrader label
+ECHO. Reaktor orders stay on the webhook path and keep the cTrader label
 "factor".
 
 Market orders use relative SL/TP because cTrader rejects absolute protection
@@ -27,7 +27,7 @@ from factor.rules.presets import round_price
 from factor.services.breakeven import mark_price_for_side, reconcile_order_vs_positions
 
 AI_ORDER_LABEL = "AI-GOLD-v1"
-SIGNAL_ORDER_LABEL = "MANAN"
+SIGNAL_ORDER_LABEL = "ECHO"
 ALLOWED_ORDER_LABELS = frozenset({AI_ORDER_LABEL, SIGNAL_ORDER_LABEL})
 _ORDER_TYPES = ("market", "limit", "stop")
 _ACTIONS = (
