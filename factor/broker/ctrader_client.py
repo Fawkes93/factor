@@ -22,6 +22,7 @@ PT_APP_AUTH_RES = 2101
 PT_ACCOUNT_AUTH_REQ = 2102
 PT_ACCOUNT_AUTH_RES = 2103
 PT_NEW_ORDER_REQ = 2106
+PT_CANCEL_ORDER_REQ = 2108
 PT_AMEND_POSITION_SLTP_REQ = 2110
 PT_CLOSE_POSITION_REQ = 2111
 PT_ASSET_LIST_REQ = 2112
@@ -730,6 +731,23 @@ class CTraderClient:
         body = msg.get("payload") or {}
         if pt in (PT_ORDER_ERROR_EVENT, PT_ERROR_RES):
             raise CTraderError(f"order rejected: {body}")
+        return body
+
+    def cancel_order(self, order_id: int) -> Dict[str, Any]:
+        """ProtoOACancelOrderReq (2108). Pending orders only."""
+        payload = {
+            "ctidTraderAccountId": self.account_id,
+            "orderId": int(order_id),
+        }
+        msg = self._request(
+            PT_CANCEL_ORDER_REQ,
+            payload,
+            expect_any=(PT_EXECUTION_EVENT, PT_ORDER_ERROR_EVENT, PT_ERROR_RES),
+        )
+        pt = int(msg.get("payloadType") or 0)
+        body = msg.get("payload") or {}
+        if pt in (PT_ORDER_ERROR_EVENT, PT_ERROR_RES):
+            raise CTraderError(f"cancel rejected: {body}")
         return body
 
     # --- internals ---

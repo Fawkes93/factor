@@ -228,6 +228,62 @@ def test_place_rejects_other_labels():
         ai.place_ai_order(_market_body(label="factor"))
     assert "AI-GOLD-v1" in exc.value.message
     assert "ECHO" in exc.value.message
+    assert "POC" in exc.value.message
+
+
+def test_place_accepts_poc_label(broker, inserted):
+    out = ai.place_ai_order(_market_body(label="POC"))
+    assert out["success"] is True
+    assert broker.placed[0]["label"] == "POC"
+    assert inserted["label"] == "POC"
+
+
+def test_cancel_pending_order(monkeypatch, broker):
+    cancelled = []
+    broker.cancel_order = lambda order_id: cancelled.append(order_id)
+    updated = {}
+
+    def update_order(order_id, **fields):
+        updated["id"] = order_id
+        updated.update(fields)
+        return updated
+
+    monkeypatch.setattr(
+        ai.repos,
+        "list_orders",
+        lambda *args, **kwargs: [
+            {
+                "id": "row-1",
+                "broker_order_id": "555",
+                "label": "POC",
+                "status": "open",
+            }
+        ],
+    )
+    monkeypatch.setattr(ai.repos, "update_order", update_order)
+    out = ai.cancel_ai_order({"order_id": "555", "label": "POC"})
+    assert out["success"] is True
+    assert cancelled == ["555"]
+    assert updated["status"] == "cancelled"
+
+
+def test_cancel_refuses_a_different_label(monkeypatch, broker):
+    broker.cancel_order = lambda order_id: None
+    monkeypatch.setattr(
+        ai.repos,
+        "list_orders",
+        lambda *args, **kwargs: [
+            {
+                "id": "row-1",
+                "broker_order_id": "555",
+                "label": "ECHO",
+                "status": "open",
+            }
+        ],
+    )
+    out = ai.cancel_ai_order({"order_id": "555", "label": "POC"})
+    assert out["success"] is False
+    assert out["message"] == "order not found"
 
 
 def test_place_accepts_echo_label(broker, inserted):

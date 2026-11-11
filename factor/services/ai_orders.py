@@ -3,8 +3,8 @@ AI execution API.
 
 The orchestrator sends structured orders. Factor is the only side that talks
 to cTrader. Scheduled AI orders are labeled AI-GOLD-v1. Channel signals use
-ECHO. Reaktor orders stay on the webhook path and keep the cTrader label
-"factor".
+ECHO. The weekly value-area bot uses POC. Reaktor orders stay on the
+webhook path and keep the cTrader label "factor".
 
 Market orders use relative SL/TP because cTrader rejects absolute protection
 prices on MARKET. Limit and stop orders use absolute prices.
@@ -28,7 +28,8 @@ from factor.services.breakeven import mark_price_for_side, reconcile_order_vs_po
 
 AI_ORDER_LABEL = "AI-GOLD-v1"
 SIGNAL_ORDER_LABEL = "ECHO"
-ALLOWED_ORDER_LABELS = frozenset({AI_ORDER_LABEL, SIGNAL_ORDER_LABEL})
+POC_ORDER_LABEL = "POC"
+ALLOWED_ORDER_LABELS = frozenset({AI_ORDER_LABEL, SIGNAL_ORDER_LABEL, POC_ORDER_LABEL})
 _ORDER_TYPES = ("market", "limit", "stop")
 _ACTIONS = (
     "leave",
@@ -470,6 +471,80 @@ def place_ai_order(payload: Dict[str, Any]) -> Dict[str, Any]:
         message=message,
         order_id=result.broker_order_id,
         position_id=position_id,
+        account_id=account_id,
+    )
+
+
+def _order_row(conn: Dict[str, Any], order_id: str, label: str) -> Optional[Dict[str, Any]]:
+    try:
+        rows = repos.list_orders(
+            str(conn["user_id"]),
+            limit=200,
+            account_id=int(conn["account_id"]),
+        )
+    except Exception as e:
+        raise AiOrderError(f"could not load orders: {e}", 503)
+    for row in rows:
+        if str(row.get("broker_order_id") or "") != order_id:
+            continue
+        if str(row.get("label") or "") != label:
+            continue
+        return row
+    return None
+
+
+def cancel_ai_order(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel one pending order that this service placed under the given label."""
+    if not isinstance(payload, dict):
+        raise AiOrderError("JSON object required")
+    label = _parse_label(payload.get("label"))
+    order_id = str(payload.get("order_id") or "").strip()
+    if not order_id:
+        raise AiOrderError("order_id is required")
+    conn = resolve_connection(_optional_account_id(payload.get("account_id")))
+    account_id = int(conn["account_id"])
+    row = _order_row(conn, order_id, label)
+    if row is None:
+        return _trade_result(
+            success=False,
+            message="order not found",
+            order_id=order_id,
+            account_id=account_id,
+        )
+    status = str(row.get("status") or "")
+    if status == "cancelled":
+        return _trade_result(
+            success=True,
+            message="Order already cancelled",
+            order_id=order_id,
+            account_id=account_id,
+        )
+    if status not in ("open", "pending"):
+        return _trade_result(
+            success=False,
+            message=f"order is {status or 'closed'}",
+            order_id=order_id,
+            account_id=account_id,
+        )
+    broker = broker_for_connection(conn)
+    try:
+        broker.cancel_order(order_id)
+    except Exception as e:
+        return _trade_result(
+            success=False,
+            message=str(e),
+            order_id=order_id,
+            account_id=account_id,
+        )
+    if row.get("id"):
+        try:
+            repos.update_order(str(row["id"]), status="cancelled", skip_reason="cancelled")
+        except Exception as e:
+            print(f"⚠️  AI cancel sync failed order={order_id}: {e}")
+    return _trade_result(
+        success=True,
+        message="Order cancelled",
+        order_id=order_id,
         account_id=account_id,
     )
 

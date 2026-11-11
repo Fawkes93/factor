@@ -509,6 +509,21 @@ class CTraderBroker:
             self._bump_open_cache()
             return body
 
+    def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        """Cancel one pending order. Dry-run records the id and does not connect."""
+        if self._dry_run:
+            print(f"🛑 dry_run cancel order={order_id}")
+            return {"dry_run": True, "order_id": str(order_id), "cancelled": True}
+        if not str(order_id).isdigit():
+            raise CTraderError(f"order id {order_id} is not numeric")
+        if not self.configured():
+            raise CTraderError("cTrader not configured")
+        with self._lock:
+            with self._new_client() as client:
+                body = client.cancel_order(int(order_id))
+            self._bump_open_cache()
+            return body
+
     def amend_position_sl_tp(
         self,
         *,

@@ -19,6 +19,7 @@ from factor.services.ai_orders import (
     AI_ORDER_LABEL,
     AiOrderError,
     ai_kill_status,
+    cancel_ai_order,
     list_ai_positions,
     manage_ai_position,
     place_ai_order,
@@ -69,6 +70,20 @@ async def post_ai_order(
     try:
         payload = await _json_object(request)
         return place_ai_order(payload)
+    except AiOrderError as exc:
+        return _error(exc)
+
+
+@router.post("/api/ai/orders/cancel")
+async def post_ai_cancel(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> Any:
+    _require_ai_auth(authorization, x_api_key)
+    try:
+        payload = await _json_object(request)
+        return cancel_ai_order(payload)
     except AiOrderError as exc:
         return _error(exc)
 
