@@ -1139,6 +1139,7 @@ def list_orders(
     limit: int = 50,
     status: Optional[str] = None,
     account_id: Optional[int] = None,
+    broker_order_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     sb = get_supabase()
     limit = max(1, min(int(limit), 200))
@@ -1151,6 +1152,8 @@ def list_orders(
     )
     if account_id is not None:
         q = q.eq("account_id", int(account_id))
+    if broker_order_id:
+        q = q.eq("broker_order_id", str(broker_order_id))
     if status:
         q = q.eq("status", status)
     res = q.execute()

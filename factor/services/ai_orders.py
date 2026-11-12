@@ -475,19 +475,66 @@ def place_ai_order(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+def _row_label(row: Dict[str, Any]) -> str:
+    label = str(row.get("label") or "").strip()
+    if label:
+        return label
+    detail = row.get("detail")
+    if isinstance(detail, dict):
+        return str(detail.get("label") or "").strip()
+    return ""
+
+
+def _cancel_unrecorded(conn: Dict[str, Any], order_id: str, account_id: int) -> Dict[str, Any]:
+    """No audit row. Cancel the id if cTrader still has it, otherwise say it is gone."""
+    broker = broker_for_connection(conn)
+    try:
+        live = {str(item) for item in broker.pending_order_ids()}
+    except Exception as e:
+        return _trade_result(
+            success=False,
+            message=f"could not check the account: {e}",
+            order_id=order_id,
+            account_id=account_id,
+        )
+    if order_id not in live:
+        return _trade_result(
+            success=False,
+            message="order not found",
+            order_id=order_id,
+            account_id=account_id,
+        )
+    try:
+        broker.cancel_order(order_id)
+    except Exception as e:
+        return _trade_result(
+            success=False,
+            message=str(e),
+            order_id=order_id,
+            account_id=account_id,
+        )
+    return _trade_result(
+        success=True,
+        message="Order cancelled",
+        order_id=order_id,
+        account_id=account_id,
+    )
+
+
 def _order_row(conn: Dict[str, Any], order_id: str, label: str) -> Optional[Dict[str, Any]]:
     try:
         rows = repos.list_orders(
             str(conn["user_id"]),
-            limit=200,
+            limit=5,
             account_id=int(conn["account_id"]),
+            broker_order_id=order_id,
         )
     except Exception as e:
         raise AiOrderError(f"could not load orders: {e}", 503)
     for row in rows:
         if str(row.get("broker_order_id") or "") != order_id:
             continue
-        if str(row.get("label") or "") != label:
+        if _row_label(row) != label:
             continue
         return row
     return None
@@ -505,12 +552,7 @@ def cancel_ai_order(payload: Dict[str, Any]) -> Dict[str, Any]:
     account_id = int(conn["account_id"])
     row = _order_row(conn, order_id, label)
     if row is None:
-        return _trade_result(
-            success=False,
-            message="order not found",
-            order_id=order_id,
-            account_id=account_id,
-        )
+        return _cancel_unrecorded(conn, order_id, account_id)
     status = str(row.get("status") or "")
     if status == "cancelled":
         return _trade_result(

@@ -33,6 +33,7 @@ PT_TRADER_REQ = 2121
 PT_TRADER_RES = 2122
 PT_RECONCILE_REQ = 2124
 PT_RECONCILE_RES = 2125
+ORDER_STATUS_ACCEPTED = 1
 PT_EXECUTION_EVENT = 2126
 PT_SUBSCRIBE_SPOTS_REQ = 2127
 PT_SUBSCRIBE_SPOTS_RES = 2128
@@ -134,6 +135,21 @@ def normalize_open_position(
         "open_timestamp": opened_i,
         "raw": p,
     }
+
+
+def _working_order(order: Dict[str, Any]) -> bool:
+    """Accepted pending orders stay. Filled, expired, and cancelled do not."""
+    status = order.get("orderStatus")
+    if status is None:
+        status = order.get("order_status")
+    if status is None or status == "":
+        return True
+    if isinstance(status, str) and not status.strip().isdigit():
+        return status.strip().upper() in {"ORDER_STATUS_ACCEPTED", "ACCEPTED"}
+    try:
+        return int(status) == ORDER_STATUS_ACCEPTED
+    except (TypeError, ValueError):
+        return True
 
 
 class CTraderClient:
@@ -269,6 +285,37 @@ class CTraderClient:
                     pass
                 open_pos.append(p)
         return open_pos
+
+    def list_pending_order_ids(self) -> List[int]:
+        """Working pending orders from reconcile. Protection orders stay out."""
+        msg = self._request(
+            PT_RECONCILE_REQ,
+            {
+                "ctidTraderAccountId": self.account_id,
+                "returnProtectionOrders": False,
+            },
+            expect=PT_RECONCILE_RES,
+        )
+        if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+            raise CTraderError(f"reconcile failed: {msg.get('payload') or msg}")
+        payload = msg.get("payload") or {}
+        orders = payload.get("order") or payload.get("orders") or []
+        if isinstance(orders, dict):
+            orders = [orders]
+        if not isinstance(orders, list):
+            return []
+        ids: List[int] = []
+        for order in orders:
+            if not isinstance(order, dict) or not _working_order(order):
+                continue
+            raw = order.get("orderId")
+            if raw is None:
+                raw = order.get("order_id")
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        return ids
 
     def count_open_positions(self, broker_symbol: Optional[str] = None) -> int:
         """Count open positions, optionally filtered to broker_symbol (e.g. XAUUSD)."""

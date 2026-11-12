@@ -509,6 +509,14 @@ class CTraderBroker:
             self._bump_open_cache()
             return body
 
+    def pending_order_ids(self) -> list:
+        """Order ids still working on this account. Dry-run has none."""
+        if not self.configured() or self._dry_run:
+            return []
+        with self._lock:
+            with self._new_client() as client:
+                return client.list_pending_order_ids()
+
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         """Cancel one pending order. Dry-run records the id and does not connect."""
         if self._dry_run:
