@@ -419,6 +419,29 @@ class CTraderBroker:
                         row["ask"] = spot.get("ask")
                 return rows
 
+    def describe_book(self) -> Dict[str, Any]:
+        """
+        Open positions plus account balance and equity.
+
+        A funds failure still returns the positions. equity is balance plus
+        net unrealized profit on every open position, not only this label.
+        """
+        rows = self.describe_open_positions()
+        funds: Dict[str, Any] = {"balance": None, "equity": None, "currency": None}
+        if self.configured() and not self._dry_run:
+            try:
+                with self._lock:
+                    with self._new_client() as client:
+                        funds = client.get_account_funds()
+            except Exception as exc:
+                print(f"⚠️  account funds failed: {exc}")
+        return {
+            "positions": rows,
+            "balance": funds.get("balance"),
+            "equity": funds.get("equity"),
+            "currency": funds.get("currency"),
+        }
+
     def _new_client(self) -> CTraderClient:
         return CTraderClient(
             host=self._host,

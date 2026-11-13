@@ -120,6 +120,80 @@ def test_get_deposit_currency_maps_asset_name():
     assert client.get_deposit_currency() == "USD"
 
 
+def test_account_funds_scale_balance_and_add_net_unrealized():
+    client = CTraderClient(
+        host="demo.ctraderapi.com",
+        client_id="id",
+        client_secret="secret",
+        access_token="token",
+        account_id=42,
+    )
+
+    def fake_request(payload_type, payload, expect=None, expect_any=None):
+        if payload_type == cc.PT_TRADER_REQ:
+            return {
+                "payloadType": cc.PT_TRADER_RES,
+                "payload": {
+                    "trader": {
+                        "balance": 1_000_000,
+                        "moneyDigits": 2,
+                        "depositAssetId": 7,
+                    }
+                },
+            }
+        if payload_type == cc.PT_ASSET_LIST_REQ:
+            return {
+                "payloadType": cc.PT_ASSET_LIST_RES,
+                "payload": {"asset": [{"assetId": 7, "name": "USD"}]},
+            }
+        if payload_type == cc.PT_GET_POSITION_UNREALIZED_PNL_REQ:
+            return {
+                "payloadType": cc.PT_GET_POSITION_UNREALIZED_PNL_RES,
+                "payload": {
+                    "moneyDigits": 2,
+                    "positionUnrealizedPnL": [
+                        {"positionId": 1, "grossUnrealizedPnL": 150, "netUnrealizedPnL": 150},
+                        {"positionId": 2, "grossUnrealizedPnL": -40, "netUnrealizedPnL": -25},
+                    ],
+                },
+            }
+        raise AssertionError(payload_type)
+
+    client._request = fake_request
+    assert client.get_account_funds() == {
+        "balance": 10000.0,
+        "equity": 10001.25,
+        "currency": "USD",
+    }
+
+
+def test_account_funds_keep_balance_when_unrealized_fails():
+    client = CTraderClient(
+        host="demo.ctraderapi.com",
+        client_id="id",
+        client_secret="secret",
+        access_token="token",
+        account_id=42,
+    )
+
+    def fake_request(payload_type, payload, expect=None, expect_any=None):
+        if payload_type == cc.PT_TRADER_REQ:
+            return {
+                "payloadType": cc.PT_TRADER_RES,
+                "payload": {"trader": {"balance": 5000, "moneyDigits": 2}},
+            }
+        if payload_type == cc.PT_GET_POSITION_UNREALIZED_PNL_REQ:
+            return {"payloadType": cc.PT_ERROR_RES, "payload": {"description": "no"}}
+        raise AssertionError(payload_type)
+
+    client._request = fake_request
+    assert client.get_account_funds() == {
+        "balance": 50.0,
+        "equity": None,
+        "currency": None,
+    }
+
+
 def test_normalize_spot_quote_scaled_and_decimal():
     # XAU 4339.52 and EUR 1.12308 are both 1/100000 integers. The old
     # >= 1_000_000 cutoff left EUR unscaled (112308).

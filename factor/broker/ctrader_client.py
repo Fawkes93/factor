@@ -555,12 +555,7 @@ class CTraderClient:
             )
         return out
 
-    def get_deposit_currency(self) -> Optional[str]:
-        """
-        Deposit currency code (e.g. USD).
-
-        ProtoOATraderReq.depositAssetId, then the name from ProtoOAAssetListReq.
-        """
+    def _fetch_trader(self) -> Dict[str, Any]:
         trader_msg = self._request(
             PT_TRADER_REQ,
             {"ctidTraderAccountId": self.account_id},
@@ -570,11 +565,11 @@ class CTraderClient:
             raise CTraderError(f"trader req failed: {trader_msg.get('payload') or trader_msg}")
         body = trader_msg.get("payload") or {}
         trader = body.get("trader") if isinstance(body.get("trader"), dict) else body
-        asset_id = trader.get("depositAssetId")
-        if asset_id is None:
-            asset_id = trader.get("deposit_asset_id")
-        if asset_id is None:
-            return None
+        if not isinstance(trader, dict):
+            raise CTraderError("trader payload missing")
+        return trader
+
+    def _asset_name(self, asset_id: Any) -> Optional[str]:
         assets_msg = self._request(
             PT_ASSET_LIST_REQ,
             {"ctidTraderAccountId": self.account_id},
@@ -604,6 +599,73 @@ class CTraderClient:
             name = str(asset.get("name") or asset.get("displayName") or "").strip().upper()
             return name or None
         return None
+
+    def get_deposit_currency(self) -> Optional[str]:
+        """
+        Deposit currency code (e.g. USD).
+
+        ProtoOATraderReq.depositAssetId, then the name from ProtoOAAssetListReq.
+        """
+        trader = self._fetch_trader()
+        asset_id = trader.get("depositAssetId")
+        if asset_id is None:
+            asset_id = trader.get("deposit_asset_id")
+        if asset_id is None:
+            return None
+        return self._asset_name(asset_id)
+
+    def get_trader_snapshot(self) -> Dict[str, Any]:
+        """
+        Balance and deposit currency from ProtoOATraderReq.
+
+        balance is closed-trade cash in the deposit currency. moneyDigits
+        scales the integer cTrader sends.
+        """
+        from factor.services.outcome import money_to_float
+
+        trader = self._fetch_trader()
+        digits = trader.get("moneyDigits")
+        if digits is None:
+            digits = trader.get("money_digits")
+        raw = trader.get("balance")
+        if raw is None:
+            raise CTraderError("trader balance missing")
+        try:
+            places = 2 if digits is None else max(0, min(8, int(digits)))
+        except (TypeError, ValueError):
+            places = 2
+        balance = round(float(money_to_float(raw, digits)), places)
+        asset_id = trader.get("depositAssetId")
+        if asset_id is None:
+            asset_id = trader.get("deposit_asset_id")
+        currency = None
+        if asset_id is not None:
+            try:
+                currency = self._asset_name(asset_id)
+            except CTraderError as exc:
+                print(f"⚠️  deposit currency failed: {exc}")
+        return {"balance": balance, "currency": currency, "money_digits": places}
+
+    def get_account_funds(self) -> Dict[str, Any]:
+        """
+        balance, equity, and deposit currency.
+
+        equity is balance plus the net unrealized profit of every open
+        position. equity is None when that profit request fails.
+        """
+        snap = self.get_trader_snapshot()
+        equity = None
+        try:
+            rows = self.get_unrealized_pnl()
+            net = sum(float(row["net"]) for row in rows)
+            equity = round(snap["balance"] + net, int(snap["money_digits"]))
+        except CTraderError as exc:
+            print(f"⚠️  equity pnl failed: {exc}")
+        return {
+            "balance": snap["balance"],
+            "equity": equity,
+            "currency": snap["currency"],
+        }
 
     def list_open_positions_info(self) -> List[Dict[str, Any]]:
         """Normalized open positions for BE / management."""

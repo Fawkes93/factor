@@ -660,6 +660,25 @@ def _public_position(pos: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _optional_money(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _book_funds(book: Dict[str, Any]) -> Dict[str, Any]:
+    currency = book.get("currency")
+    code = str(currency).strip().upper() if currency not in (None, "") else None
+    return {
+        "balance": _optional_money(book.get("balance")),
+        "equity": _optional_money(book.get("equity")),
+        "currency": code or None,
+    }
+
+
 def list_ai_positions(
     *,
     label: str = AI_ORDER_LABEL,
@@ -669,8 +688,15 @@ def list_ai_positions(
     want = _parse_label(label)
     conn = resolve_connection(account_id)
     broker = broker_for_connection(conn)
+    empty_funds = {"balance": None, "equity": None, "currency": None}
     try:
-        rows = broker.describe_open_positions()
+        if hasattr(broker, "describe_book"):
+            book = broker.describe_book() or {}
+            rows = book.get("positions") or []
+            funds = _book_funds(book)
+        else:
+            rows = broker.describe_open_positions()
+            funds = empty_funds
     except Exception as e:
         return {
             "success": False,
@@ -678,6 +704,7 @@ def list_ai_positions(
             "account_id": int(conn["account_id"]),
             "positions": [],
             "message": str(e),
+            **empty_funds,
         }
     positions = [
         _public_position(row)
@@ -690,6 +717,7 @@ def list_ai_positions(
         "account_id": int(conn["account_id"]),
         "positions": positions,
         "message": f"{len(positions)} open",
+        **funds,
     }
 
 

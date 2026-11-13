@@ -56,6 +56,9 @@ class FakeBroker:
         self.closed = []
         self.amended = []
         self.positions = []
+        self.balance = None
+        self.equity = None
+        self.currency = None
 
     def place_labeled_order(self, **kwargs):
         self.placed.append(kwargs)
@@ -69,6 +72,14 @@ class FakeBroker:
 
     def describe_open_positions(self):
         return list(self.positions)
+
+    def describe_book(self):
+        return {
+            "positions": list(self.positions),
+            "balance": self.balance,
+            "equity": self.equity,
+            "currency": self.currency,
+        }
 
     def pending_order_ids(self):
         return []
@@ -427,6 +438,32 @@ def test_list_returns_only_the_ai_label(broker):
     opened = datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
     assert row["opened_at"] == opened.isoformat().replace("+00:00", "Z")
     assert row["label"] == AI_ORDER_LABEL
+    assert out["balance"] is None
+    assert out["equity"] is None
+    assert out["currency"] is None
+
+
+def test_list_includes_balance_and_equity(broker):
+    broker.balance = 10000
+    broker.equity = 10004.2
+    broker.currency = "usd"
+    out = ai.list_ai_positions()
+    assert out["balance"] == 10000.0
+    assert out["equity"] == 10004.2
+    assert out["currency"] == "USD"
+
+
+def test_list_keeps_null_funds_when_the_book_fails(broker):
+    def boom():
+        raise RuntimeError("socket down")
+
+    broker.describe_book = boom
+    out = ai.list_ai_positions()
+    assert out["success"] is False
+    assert out["positions"] == []
+    assert out["balance"] is None
+    assert out["equity"] is None
+    assert out["currency"] is None
 
 
 def test_list_rejects_a_reaktor_label():
