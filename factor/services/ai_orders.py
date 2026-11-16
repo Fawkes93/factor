@@ -679,6 +679,46 @@ def _book_funds(book: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def list_ai_trendbars(
+    *,
+    symbol: str,
+    account_id: Optional[int] = None,
+    since: str,
+    timeframe_min: int = 15,
+) -> Dict[str, Any]:
+    """15-minute cTrader bars. tick_count is ticks on that bar, not contracts."""
+    if int(timeframe_min) != 15:
+        raise AiOrderError("only 15-minute bars")
+    broker_symbol = (symbol or "").strip().upper().replace("/", "")
+    if not broker_symbol:
+        raise AiOrderError("symbol is required")
+    try:
+        start = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+    except ValueError:
+        raise AiOrderError("since must be an ISO time")
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    conn = resolve_connection(account_id)
+    broker = broker_for_connection(conn)
+    try:
+        rows = broker.trendbars(
+            broker_symbol=broker_symbol,
+            from_ms=int(start.timestamp() * 1000),
+            to_ms=int(now.timestamp() * 1000),
+        )
+    except Exception as exc:
+        raise AiOrderError(f"could not load trendbars: {exc}", 503)
+    return {
+        "success": True,
+        "account_id": int(conn["account_id"]),
+        "symbol": broker_symbol,
+        "timeframe_min": 15,
+        "bars": rows,
+        "message": f"{len(rows)} bars",
+    }
+
+
 def list_ai_positions(
     *,
     label: str = AI_ORDER_LABEL,

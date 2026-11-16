@@ -49,7 +49,14 @@ PT_DEAL_LIST_BY_POSITION_ID_REQ = 2179
 PT_DEAL_LIST_BY_POSITION_ID_RES = 2180
 PT_GET_POSITION_UNREALIZED_PNL_REQ = 2187
 PT_GET_POSITION_UNREALIZED_PNL_RES = 2188
+PT_GET_TRENDBARS_REQ = 2137
+PT_GET_TRENDBARS_RES = 2138
 PT_HEARTBEAT = 51  # ProtoHeartbeatEvent (common)
+
+# ProtoOATrendbarPeriod.M15. Volume on each bar is the tick count, not contracts.
+TRENDBAR_PERIOD_M15 = 7
+TRENDBAR_PRICE_SCALE = 100_000
+TRENDBAR_SLICE_MS = 21 * 24 * 60 * 60 * 1000
 
 # ProtoOAPositionStatus
 POSITION_STATUS_OPEN = 1
@@ -69,6 +76,52 @@ _symbol_map_account: Optional[int] = None
 
 class CTraderError(Exception):
     pass
+
+
+def _proto_int(value: Any, default: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        return default
+
+
+def decode_trendbar(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One ProtoOATrendbar. Prices are low plus a delta, in 1/100000."""
+    if not isinstance(row, dict):
+        return None
+    minutes = row.get("utcTimestampInMinutes")
+    if minutes is None:
+        minutes = row.get("utc_timestamp_in_minutes")
+    if minutes is None:
+        return None
+    minute = _proto_int(minutes, default=-1)
+    if minute < 0:
+        return None
+    low_raw = _proto_int(row.get("low"), default=-1)
+    if low_raw < 0:
+        return None
+    delta_open = _proto_int(row.get("deltaOpen") if "deltaOpen" in row else row.get("delta_open"))
+    delta_high = _proto_int(row.get("deltaHigh") if "deltaHigh" in row else row.get("delta_high"))
+    delta_close = _proto_int(row.get("deltaClose") if "deltaClose" in row else row.get("delta_close"))
+    scale = float(TRENDBAR_PRICE_SCALE)
+    opened = time.gmtime(minute * 60)
+    open_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", opened)
+    return {
+        "open_time": open_time,
+        "open": (low_raw + delta_open) / scale,
+        "high": (low_raw + delta_high) / scale,
+        "low": low_raw / scale,
+        "close": (low_raw + delta_close) / scale,
+        "tick_count": max(0, _proto_int(row.get("volume"))),
+        "utc_minutes": minute,
+    }
 
 
 def normalize_open_position(
@@ -554,6 +607,57 @@ class CTraderClient:
                 }
             )
         return out
+
+    def list_trendbars(
+        self,
+        broker_symbol: str,
+        from_ms: int,
+        to_ms: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        ProtoOAGetTrendbarsReq (2137) for 15-minute bars.
+
+        Each bar's volume is the tick count on this symbol. Requests are split
+        into 21-day slices so one week of history does not overflow the call.
+        """
+        symbol_id = self.resolve_symbol_id(broker_symbol)
+        start = int(from_ms)
+        end = int(to_ms)
+        if end <= start:
+            return []
+        found: Dict[int, Dict[str, Any]] = {}
+        cursor = start
+        while cursor < end:
+            chunk_to = min(end, cursor + TRENDBAR_SLICE_MS)
+            msg = self._request(
+                PT_GET_TRENDBARS_REQ,
+                {
+                    "ctidTraderAccountId": self.account_id,
+                    "fromTimestamp": int(cursor),
+                    "toTimestamp": int(chunk_to),
+                    "period": TRENDBAR_PERIOD_M15,
+                    "symbolId": int(symbol_id),
+                },
+                expect=PT_GET_TRENDBARS_RES,
+            )
+            if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+                raise CTraderError(f"trendbars failed: {msg.get('payload') or msg}")
+            body = msg.get("payload") or {}
+            raw = body.get("trendbar") or body.get("trendbars") or []
+            if isinstance(raw, dict):
+                raw = [raw]
+            if not isinstance(raw, list):
+                raw = []
+            for row in raw:
+                decoded = decode_trendbar(row)
+                if decoded is None:
+                    continue
+                found[int(decoded["utc_minutes"])] = decoded
+            cursor = chunk_to
+        bars = [found[key] for key in sorted(found)]
+        for bar in bars:
+            bar.pop("utc_minutes", None)
+        return bars
 
     def _fetch_trader(self) -> Dict[str, Any]:
         trader_msg = self._request(

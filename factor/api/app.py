@@ -161,6 +161,7 @@ def create_app() -> FastAPI:
             "ai_orders": "POST /api/ai/orders",
             "ai_cancel": "POST /api/ai/orders/cancel",
             "ai_positions": "GET /api/ai/positions",
+            "ai_trendbars": "GET /api/ai/trendbars",
             "ai_manage": "POST /api/ai/positions/manage",
             "ai_kill": "GET /api/ai/kill",
             "ai_subscribers": "GET /api/ai/subscribers",

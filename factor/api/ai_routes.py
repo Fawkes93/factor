@@ -21,6 +21,7 @@ from factor.services.ai_orders import (
     ai_kill_status,
     cancel_ai_order,
     list_ai_positions,
+    list_ai_trendbars,
     manage_ai_position,
     place_ai_order,
 )
@@ -99,6 +100,27 @@ async def post_ai_manage(
     try:
         payload = await _json_object(request)
         return manage_ai_position(payload)
+    except AiOrderError as exc:
+        return _error(exc)
+
+
+@router.get("/api/ai/trendbars")
+def get_ai_trendbars(
+    symbol: str,
+    since: str,
+    account_id: Optional[int] = None,
+    timeframe_min: int = 15,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> Any:
+    _require_ai_auth(authorization, x_api_key)
+    try:
+        return list_ai_trendbars(
+            symbol=symbol,
+            account_id=account_id,
+            since=since,
+            timeframe_min=timeframe_min,
+        )
     except AiOrderError as exc:
         return _error(exc)
 

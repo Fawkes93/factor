@@ -376,6 +376,21 @@ class CTraderBroker:
             detail=detail,
         )
 
+    def trendbars(self, *, broker_symbol: str, from_ms: int, to_ms: int) -> list:
+        """15-minute cTrader bars. tick_count is the bar's tick volume."""
+        if not self.configured() or self._dry_run:
+            return []
+        with self._lock:
+            with CTraderClient(
+                host=self._host,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                access_token=self._access_token,
+                account_id=int(self._account_id),
+                timeout_sec=30.0,
+            ) as client:
+                return client.list_trendbars(broker_symbol, int(from_ms), int(to_ms))
+
     def describe_open_positions(self) -> list:
         """
         Open positions plus net unrealized P/L and one spot per symbol.
