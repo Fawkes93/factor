@@ -485,8 +485,12 @@ def _row_label(row: Dict[str, Any]) -> str:
     return ""
 
 
-def _cancel_unrecorded(conn: Dict[str, Any], order_id: str, account_id: int) -> Dict[str, Any]:
-    """No audit row. Cancel the id if cTrader still has it, otherwise say it is gone."""
+def _cancel_if_working(conn: Dict[str, Any], order_id: str, account_id: int) -> Optional[Dict[str, Any]]:
+    """Cancel the id when cTrader still has it.
+
+    None means cTrader does not have that working order. A dict is either the
+    successful cancel or a failure to check or cancel.
+    """
     broker = broker_for_connection(conn)
     try:
         live = {str(item) for item in broker.pending_order_ids()}
@@ -498,12 +502,7 @@ def _cancel_unrecorded(conn: Dict[str, Any], order_id: str, account_id: int) -> 
             account_id=account_id,
         )
     if order_id not in live:
-        return _trade_result(
-            success=False,
-            message="order not found",
-            order_id=order_id,
-            account_id=account_id,
-        )
+        return None
     try:
         broker.cancel_order(order_id)
     except Exception as e:
@@ -519,6 +518,19 @@ def _cancel_unrecorded(conn: Dict[str, Any], order_id: str, account_id: int) -> 
         order_id=order_id,
         account_id=account_id,
     )
+
+
+def _cancel_unrecorded(conn: Dict[str, Any], order_id: str, account_id: int) -> Dict[str, Any]:
+    """No audit row. Cancel the id if cTrader still has it, otherwise say it is gone."""
+    result = _cancel_if_working(conn, order_id, account_id)
+    if result is None:
+        return _trade_result(
+            success=False,
+            message="order not found",
+            order_id=order_id,
+            account_id=account_id,
+        )
+    return result
 
 
 def _order_row(conn: Dict[str, Any], order_id: str, label: str) -> Optional[Dict[str, Any]]:
@@ -554,14 +566,24 @@ def cancel_ai_order(payload: Dict[str, Any]) -> Dict[str, Any]:
     if row is None:
         return _cancel_unrecorded(conn, order_id, account_id)
     status = str(row.get("status") or "")
-    if status == "cancelled":
-        return _trade_result(
-            success=True,
-            message="Order already cancelled",
-            order_id=order_id,
-            account_id=account_id,
-        )
     if status not in ("open", "pending"):
+        # The saved row can say closed while cTrader still has the limit.
+        # Cancel there before telling POC the order is gone.
+        live = _cancel_if_working(conn, order_id, account_id)
+        if live is not None:
+            if live.get("success") and row.get("id"):
+                try:
+                    repos.update_order(str(row["id"]), status="cancelled", skip_reason="cancelled")
+                except Exception as e:
+                    print(f"⚠️  AI cancel sync failed order={order_id}: {e}")
+            return live
+        if status == "cancelled":
+            return _trade_result(
+                success=True,
+                message="Order already cancelled",
+                order_id=order_id,
+                account_id=account_id,
+            )
         return _trade_result(
             success=False,
             message=f"order is {status or 'closed'}",

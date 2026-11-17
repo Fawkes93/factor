@@ -333,6 +333,80 @@ def test_cancel_asks_ctrader_when_the_row_is_missing(monkeypatch, broker):
     assert cancelled == ["555"]
 
 
+def test_closed_row_cancels_when_ctrader_still_has_the_order(monkeypatch, broker):
+    cancelled = []
+    broker.pending_order_ids = lambda: ["555"]
+    broker.cancel_order = lambda order_id: cancelled.append(order_id)
+    updated = {}
+
+    def update_order(order_id, **fields):
+        updated["id"] = order_id
+        updated.update(fields)
+        return updated
+
+    monkeypatch.setattr(
+        ai.repos,
+        "list_orders",
+        lambda *args, **kwargs: [
+            {
+                "id": "row-1",
+                "broker_order_id": "555",
+                "label": "POC",
+                "status": "closed",
+            }
+        ],
+    )
+    monkeypatch.setattr(ai.repos, "update_order", update_order)
+    out = ai.cancel_ai_order({"order_id": "555", "label": "POC"})
+    assert out["success"] is True
+    assert out["message"] == "Order cancelled"
+    assert cancelled == ["555"]
+    assert updated["status"] == "cancelled"
+
+
+def test_closed_row_stays_closed_when_ctrader_does_not_have_it(monkeypatch, broker):
+    broker.pending_order_ids = lambda: []
+    broker.cancel_order = lambda order_id: (_ for _ in ()).throw(AssertionError("cancel"))
+    monkeypatch.setattr(
+        ai.repos,
+        "list_orders",
+        lambda *args, **kwargs: [
+            {
+                "id": "row-1",
+                "broker_order_id": "555",
+                "label": "POC",
+                "status": "closed",
+            }
+        ],
+    )
+    out = ai.cancel_ai_order({"order_id": "555", "label": "POC"})
+    assert out["success"] is False
+    assert out["message"] == "order is closed"
+
+
+def test_closed_row_keeps_the_order_when_ctrader_cannot_be_checked(monkeypatch, broker):
+    def pending_order_ids():
+        raise RuntimeError("reconcile down")
+
+    broker.pending_order_ids = pending_order_ids
+    broker.cancel_order = lambda order_id: (_ for _ in ()).throw(AssertionError("cancel"))
+    monkeypatch.setattr(
+        ai.repos,
+        "list_orders",
+        lambda *args, **kwargs: [
+            {
+                "id": "row-1",
+                "broker_order_id": "555",
+                "label": "POC",
+                "status": "closed",
+            }
+        ],
+    )
+    out = ai.cancel_ai_order({"order_id": "555", "label": "POC"})
+    assert out["success"] is False
+    assert out["message"].startswith("could not check the account:")
+
+
 def test_cancel_says_missing_only_when_ctrader_has_no_order(monkeypatch, broker):
     broker.pending_order_ids = lambda: []
     broker.cancel_order = lambda order_id: (_ for _ in ()).throw(AssertionError("cancel"))
