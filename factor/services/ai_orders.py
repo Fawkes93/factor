@@ -741,6 +741,35 @@ def list_ai_trendbars(
     }
 
 
+def quote_ai_symbol(
+    *,
+    symbol: str,
+    account_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Latest cTrader bid and ask. The stream stays open between calls."""
+    from factor.services.spot_feed import live_quote
+
+    broker_symbol = (symbol or "").strip().upper().replace("/", "")
+    if not broker_symbol:
+        raise AiOrderError("symbol is required")
+    conn = resolve_connection(account_id)
+    broker = broker_for_connection(conn)
+    if getattr(broker, "_dry_run", False) or not broker.configured():
+        raise AiOrderError("cTrader quote is unavailable", 503)
+    try:
+        spot = live_quote(broker, broker_symbol)
+    except Exception as exc:
+        raise AiOrderError(f"could not load quote: {exc}", 503)
+    return {
+        "success": True,
+        "account_id": int(conn["account_id"]),
+        "symbol": broker_symbol,
+        "bid": spot["bid"],
+        "ask": spot["ask"],
+        "age_sec": spot["age_sec"],
+    }
+
+
 def list_ai_positions(
     *,
     label: str = AI_ORDER_LABEL,

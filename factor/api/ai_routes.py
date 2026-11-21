@@ -24,6 +24,7 @@ from factor.services.ai_orders import (
     list_ai_trendbars,
     manage_ai_position,
     place_ai_order,
+    quote_ai_symbol,
 )
 
 router = APIRouter(tags=["ai"])
@@ -121,6 +122,20 @@ def get_ai_trendbars(
             since=since,
             timeframe_min=timeframe_min,
         )
+    except AiOrderError as exc:
+        return _error(exc)
+
+
+@router.get("/api/ai/quote")
+def get_ai_quote(
+    symbol: str,
+    account_id: Optional[int] = None,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> Any:
+    _require_ai_auth(authorization, x_api_key)
+    try:
+        return quote_ai_symbol(symbol=symbol, account_id=account_id)
     except AiOrderError as exc:
         return _error(exc)
 

@@ -92,6 +92,32 @@ def _proto_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def parse_spot_event(msg: Dict[str, Any]) -> Dict[str, float]:
+    """One ProtoOASpotEvent. Bid and ask are 1/100000 of price."""
+    if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+        raise CTraderError(f"spot event error: {msg.get('payload') or msg}")
+    body = msg.get("payload") or {}
+    if not isinstance(body, dict):
+        raise CTraderError(f"spot missing bid/ask: {body}")
+    bid = body.get("bid")
+    ask = body.get("ask")
+    if bid is None:
+        bid = body.get("bidPrice") or body.get("b")
+    if ask is None:
+        ask = body.get("askPrice") or body.get("a")
+    bid_f = CTraderClient._normalize_spot_quote(bid)
+    ask_f = CTraderClient._normalize_spot_quote(ask)
+    if bid_f is None and ask_f is not None:
+        bid_f = ask_f
+    if ask_f is None and bid_f is not None:
+        ask_f = bid_f
+    if bid_f is None or ask_f is None:
+        raise CTraderError(f"spot missing bid/ask: {body}")
+    if ask_f < bid_f:
+        bid_f, ask_f = ask_f, bid_f
+    return {"bid": bid_f, "ask": ask_f}
+
+
 def decode_trendbar(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """One ProtoOATrendbar. Prices are low plus a delta, in 1/100000."""
     if not isinstance(row, dict):
@@ -466,42 +492,13 @@ class CTraderClient:
         Returns {bid, ask, symbol_id}.
         """
         symbol_id = self.resolve_symbol_id(broker_symbol)
-        # Subscribe — RES (2128) then technical SPOT_EVENT (2131) with latest price
-        sub = self._request(
-            PT_SUBSCRIBE_SPOTS_REQ,
-            {
-                "ctidTraderAccountId": self.account_id,
-                "symbolId": [int(symbol_id)],
-            },
-            expect_any=(PT_SUBSCRIBE_SPOTS_RES, PT_SPOT_EVENT, PT_ERROR_RES),
-        )
-        pt = int(sub.get("payloadType") or 0)
-        if pt == PT_ERROR_RES:
-            raise CTraderError(f"subscribe spots failed: {sub.get('payload') or sub}")
-
-        # If subscribe response wasn't the spot, wait for spot event (2131)
-        spot_msg = sub if pt == PT_SPOT_EVENT else self._wait_payload(
-            wanted={PT_SPOT_EVENT, PT_ERROR_RES},
-            timeout_sec=min(10.0, self.timeout_sec),
-        )
-        if int(spot_msg.get("payloadType") or 0) == PT_ERROR_RES:
-            raise CTraderError(f"spot event error: {spot_msg.get('payload') or spot_msg}")
-        body = spot_msg.get("payload") or {}
-        bid = body.get("bid")
-        ask = body.get("ask")
-        if bid is None:
-            bid = body.get("bidPrice") or body.get("b")
-        if ask is None:
-            ask = body.get("askPrice") or body.get("a")
-        bid_f = self._normalize_spot_quote(bid)
-        ask_f = self._normalize_spot_quote(ask)
-        # One-sided quotes: mirror so BE mark still works
-        if bid_f is None and ask_f is not None:
-            bid_f = ask_f
-        if ask_f is None and bid_f is not None:
-            ask_f = bid_f
-        if bid_f is None or ask_f is None:
-            raise CTraderError(f"spot missing bid/ask: {body}")
+        spot = self.subscribe_spots(broker_symbol)
+        if spot is None:
+            spot_msg = self._wait_payload(
+                wanted={PT_SPOT_EVENT, PT_ERROR_RES},
+                timeout_sec=min(10.0, self.timeout_sec),
+            )
+            spot = parse_spot_event(spot_msg)
         try:
             self._request(
                 PT_UNSUBSCRIBE_SPOTS_REQ,
@@ -517,7 +514,55 @@ class CTraderClient:
             )
         except CTraderError:
             pass  # best-effort unsubscribe
-        return {"bid": bid_f, "ask": ask_f, "symbol_id": int(symbol_id)}
+        spot["symbol_id"] = int(symbol_id)
+        return spot
+
+    def subscribe_spots(self, broker_symbol: str) -> Optional[Dict[str, float]]:
+        """Subscribe and leave the stream open. The first event is returned when it arrives with the ack."""
+        symbol_id = self.resolve_symbol_id(broker_symbol)
+        sub = self._request(
+            PT_SUBSCRIBE_SPOTS_REQ,
+            {
+                "ctidTraderAccountId": self.account_id,
+                "symbolId": [int(symbol_id)],
+            },
+            expect_any=(PT_SUBSCRIBE_SPOTS_RES, PT_SPOT_EVENT, PT_ERROR_RES),
+        )
+        pt = int(sub.get("payloadType") or 0)
+        if pt == PT_ERROR_RES:
+            raise CTraderError(f"subscribe spots failed: {sub.get('payload') or sub}")
+        if pt == PT_SPOT_EVENT:
+            spot = parse_spot_event(sub)
+            spot["symbol_id"] = int(symbol_id)
+            return spot
+        return None
+
+    def read_message(self, timeout_sec: float = 10.0) -> Optional[Dict[str, Any]]:
+        """Next non-heartbeat message, or None when the wait expires."""
+        assert self._ws is not None
+        deadline = time.time() + float(timeout_sec)
+        while time.time() < deadline:
+            self._ws.settimeout(max(0.1, deadline - time.time()))
+            try:
+                raw = self._ws.recv()
+            except WebSocketTimeoutException:
+                return None
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if int(msg.get("payloadType") or 0) == PT_HEARTBEAT:
+                continue
+            return msg
+        return None
+
+    def send_heartbeat(self) -> None:
+        assert self._ws is not None
+        self._ws.send(json.dumps({"payloadType": PT_HEARTBEAT, "payload": {}}, separators=(",", ":")))
 
     def list_deals_by_position_id(
         self,
