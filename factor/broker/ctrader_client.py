@@ -118,6 +118,32 @@ def parse_spot_event(msg: Dict[str, Any]) -> Dict[str, float]:
     return {"bid": bid_f, "ask": ask_f}
 
 
+def trendbar_windows(start_ms: int, end_ms: int, slice_ms: int = TRENDBAR_SLICE_MS) -> List[Tuple[int, int]]:
+    """21-day slices, newest first. The recent week is the first cTrader call."""
+    if end_ms <= start_ms or slice_ms <= 0:
+        return []
+    windows: List[Tuple[int, int]] = []
+    cursor = int(end_ms)
+    start = int(start_ms)
+    while cursor > start:
+        begin = max(start, cursor - int(slice_ms))
+        windows.append((begin, cursor))
+        cursor = begin
+    return windows
+
+
+def trendbar_blocked(msg: Dict[str, Any]) -> bool:
+    payload = msg.get("payload") if isinstance(msg, dict) else None
+    if isinstance(payload, dict):
+        code = str(payload.get("errorCode") or "")
+        text = str(payload.get("description") or "")
+    else:
+        code = ""
+        text = str(payload or "")
+    blob = f"{code} {text}".upper()
+    return "BLOCKED_PAYLOAD_TYPE" in blob or "RATE LIMIT" in blob
+
+
 def decode_trendbar(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """One ProtoOATrendbar. Prices are low plus a delta, in 1/100000."""
     if not isinstance(row, dict):
@@ -663,22 +689,18 @@ class CTraderClient:
         ProtoOAGetTrendbarsReq (2137) for 15-minute bars.
 
         Each bar's volume is the tick count on this symbol. Requests are split
-        into 21-day slices so one week of history does not overflow the call.
+        into 21-day slices, newest first. A rate limit keeps the slices already loaded.
         """
         symbol_id = self.resolve_symbol_id(broker_symbol)
         start = int(from_ms)
         end = int(to_ms)
-        if end <= start:
-            return []
         found: Dict[int, Dict[str, Any]] = {}
-        cursor = start
-        while cursor < end:
-            chunk_to = min(end, cursor + TRENDBAR_SLICE_MS)
+        for chunk_from, chunk_to in trendbar_windows(start, end):
             msg = self._request(
                 PT_GET_TRENDBARS_REQ,
                 {
                     "ctidTraderAccountId": self.account_id,
-                    "fromTimestamp": int(cursor),
+                    "fromTimestamp": int(chunk_from),
                     "toTimestamp": int(chunk_to),
                     "period": TRENDBAR_PERIOD_M15,
                     "symbolId": int(symbol_id),
@@ -686,6 +708,12 @@ class CTraderClient:
                 expect=PT_GET_TRENDBARS_RES,
             )
             if int(msg.get("payloadType") or 0) == PT_ERROR_RES:
+                if trendbar_blocked(msg) and found:
+                    print(
+                        f"cTrader trendbars rate limited after {len(found)} bars; keeping the newer slices",
+                        flush=True,
+                    )
+                    break
                 raise CTraderError(f"trendbars failed: {msg.get('payload') or msg}")
             body = msg.get("payload") or {}
             raw = body.get("trendbar") or body.get("trendbars") or []
@@ -698,7 +726,6 @@ class CTraderClient:
                 if decoded is None:
                     continue
                 found[int(decoded["utc_minutes"])] = decoded
-            cursor = chunk_to
         bars = [found[key] for key in sorted(found)]
         for bar in bars:
             bar.pop("utc_minutes", None)
