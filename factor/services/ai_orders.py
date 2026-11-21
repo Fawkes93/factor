@@ -706,6 +706,7 @@ def list_ai_trendbars(
     symbol: str,
     account_id: Optional[int] = None,
     since: str,
+    until: Optional[str] = None,
     timeframe_min: int = 15,
 ) -> Dict[str, Any]:
     """15-minute cTrader bars. tick_count is ticks on that bar, not contracts."""
@@ -714,20 +715,17 @@ def list_ai_trendbars(
     broker_symbol = (symbol or "").strip().upper().replace("/", "")
     if not broker_symbol:
         raise AiOrderError("symbol is required")
-    try:
-        start = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
-    except ValueError:
-        raise AiOrderError("since must be an ISO time")
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
+    start = _parse_bar_time(since, "since")
+    end = datetime.now(timezone.utc) if not until else _parse_bar_time(until, "until")
+    if end <= start:
+        raise AiOrderError("until must be after since")
     conn = resolve_connection(account_id)
     broker = broker_for_connection(conn)
     try:
         rows = broker.trendbars(
             broker_symbol=broker_symbol,
             from_ms=int(start.timestamp() * 1000),
-            to_ms=int(now.timestamp() * 1000),
+            to_ms=int(end.timestamp() * 1000),
         )
     except Exception as exc:
         raise AiOrderError(f"could not load trendbars: {exc}", 503)
@@ -739,6 +737,16 @@ def list_ai_trendbars(
         "bars": rows,
         "message": f"{len(rows)} bars",
     }
+
+
+def _parse_bar_time(value: str, name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise AiOrderError(f"{name} must be an ISO time")
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def quote_ai_symbol(

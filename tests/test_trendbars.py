@@ -39,6 +39,33 @@ def test_trendbar_windows_start_with_the_newest_slice():
     ]
 
 
+def test_trendbars_until_bounds_the_request(monkeypatch):
+    from factor.services.ai_orders import list_ai_trendbars
+
+    seen: dict = {}
+
+    class Broker:
+        def trendbars(self, broker_symbol, from_ms, to_ms):
+            seen["symbol"] = broker_symbol
+            seen["from"] = from_ms
+            seen["to"] = to_ms
+            return []
+
+    monkeypatch.setattr(
+        "factor.services.ai_orders.resolve_connection",
+        lambda account_id=None: {"account_id": 1},
+    )
+    monkeypatch.setattr("factor.services.ai_orders.broker_for_connection", lambda conn: Broker())
+    body = list_ai_trendbars(
+        symbol="XAUUSD",
+        since="2026-11-01T00:00:00Z",
+        until="2026-11-08T00:00:00Z",
+    )
+    assert body["success"] is True
+    assert seen["symbol"] == "XAUUSD"
+    assert seen["to"] - seen["from"] == 7 * 24 * 60 * 60 * 1000
+
+
 def test_rate_limit_is_a_blocked_trendbar():
     assert trendbar_blocked(
         {

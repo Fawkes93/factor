@@ -109,6 +109,7 @@ async def post_ai_manage(
 def get_ai_trendbars(
     symbol: str,
     since: str,
+    until: Optional[str] = None,
     account_id: Optional[int] = None,
     timeframe_min: int = 15,
     authorization: Optional[str] = Header(default=None),
@@ -120,6 +121,7 @@ def get_ai_trendbars(
             symbol=symbol,
             account_id=account_id,
             since=since,
+            until=until,
             timeframe_min=timeframe_min,
         )
     except AiOrderError as exc:
