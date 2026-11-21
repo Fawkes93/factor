@@ -159,6 +159,7 @@ def create_app() -> FastAPI:
             "mode": "multi_user",
             "supabase_configured": supabase_configured(),
             "ai_orders": "POST /api/ai/orders",
+            "ai_pending_orders": "GET /api/ai/orders",
             "ai_cancel": "POST /api/ai/orders/cancel",
             "ai_positions": "GET /api/ai/positions",
             "ai_trendbars": "GET /api/ai/trendbars",

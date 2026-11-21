@@ -20,6 +20,7 @@ from factor.services.ai_orders import (
     AiOrderError,
     ai_kill_status,
     cancel_ai_order,
+    list_ai_pending_orders,
     list_ai_positions,
     list_ai_trendbars,
     manage_ai_position,
@@ -138,6 +139,20 @@ def get_ai_quote(
     _require_ai_auth(authorization, x_api_key)
     try:
         return quote_ai_symbol(symbol=symbol, account_id=account_id)
+    except AiOrderError as exc:
+        return _error(exc)
+
+
+@router.get("/api/ai/orders")
+def get_ai_orders(
+    account_id: Optional[int] = None,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> Any:
+    """Working order ids from cTrader. Empty means none are working, not that the check failed."""
+    _require_ai_auth(authorization, x_api_key)
+    try:
+        return list_ai_pending_orders(account_id=account_id)
     except AiOrderError as exc:
         return _error(exc)
 

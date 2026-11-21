@@ -820,6 +820,26 @@ def list_ai_positions(
     }
 
 
+def list_ai_pending_orders(*, account_id: Optional[int] = None) -> Dict[str, Any]:
+    """Working cTrader order ids on the account. The list is not filtered by label."""
+    conn = resolve_connection(account_id)
+    broker = broker_for_connection(conn)
+    try:
+        raw = broker.pending_order_ids()
+    except Exception as exc:
+        raise AiOrderError(f"could not list working orders: {exc}", 503) from exc
+    orders = []
+    for item in raw or []:
+        if item is None or str(item) == "":
+            continue
+        orders.append({"order_id": str(item)})
+    return {
+        "success": True,
+        "account_id": int(conn["account_id"]),
+        "orders": orders,
+    }
+
+
 def _find_position(rows: List[Dict[str, Any]], position_id: int) -> Optional[Dict[str, Any]]:
     for row in rows or []:
         try:

@@ -56,6 +56,7 @@ class FakeBroker:
         self.closed = []
         self.amended = []
         self.positions = []
+        self.working_order_ids: list = []
         self.balance = None
         self.equity = None
         self.currency = None
@@ -82,7 +83,7 @@ class FakeBroker:
         }
 
     def pending_order_ids(self):
-        return []
+        return list(self.working_order_ids)
 
     def close_position(self, *, position_id, volume):
         self.closed.append({"position_id": position_id, "volume": volume})
@@ -862,3 +863,40 @@ def test_http_place_and_aliases(monkeypatch, broker):
     assert killed.status_code == 200
     assert killed.json()["kill_switch"] is False
     assert len(broker.placed) == 2
+
+
+def test_list_pending_orders_returns_working_ids(broker):
+    broker.working_order_ids = [1038604245, "1038604246", None, ""]
+    assert ai.list_ai_pending_orders() == {
+        "success": True,
+        "account_id": 6168349,
+        "orders": [{"order_id": "1038604245"}, {"order_id": "1038604246"}],
+    }
+
+
+def test_list_pending_orders_fails_when_ctrader_cannot_be_checked(broker):
+    def boom():
+        raise RuntimeError("socket down")
+
+    broker.pending_order_ids = boom
+    with pytest.raises(AiOrderError) as caught:
+        ai.list_ai_pending_orders()
+    assert caught.value.status_code == 503
+
+
+def test_http_lists_working_orders(monkeypatch, broker):
+    monkeypatch.setattr(config, "FACTOR_ADMIN_TOKEN", "secret")
+    broker.working_order_ids = [55]
+    client = _client()
+    listed = client.get(
+        "/api/ai/orders",
+        headers={"Authorization": "Bearer secret"},
+        params={"account_id": 6168349},
+    )
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["success"] is True
+    assert body["orders"] == [{"order_id": "55"}]
+    assert body["account_id"] == 6168349
+    denied = client.get("/api/ai/orders")
+    assert denied.status_code == 401
